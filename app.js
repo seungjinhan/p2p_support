@@ -1,12 +1,5 @@
 /**
- * WebRTC P2P DataChannel Engine with Full Disconnection Resilience & Auto-Recovery
- * 
- * Features:
- * 1. Immediate Disconnection Detection: When either peer refreshes or closes, the remaining peer
- *    immediately resets its state, updates UI to "waiting", and broadcasts presence for instant auto-recovery.
- * 2. Instant Zero-Action Reconnection: When the refreshed peer returns, both peers reconnect in < 0.5s.
- * 3. File Transfer Interruption & 1-Click Retry: If a transfer is interrupted by a refresh,
- *    the sender retains the file in memory and shows a "🔄 다시 보내기" button.
+ * WebRTC P2P DataChannel Engine with 6-Digit Key Lobby & Live Connected Peer List
  */
 
 // Configuration
@@ -45,21 +38,20 @@ let peerConnection = null;
 let dataChannel = null;
 let currentRoomId = '';
 let myClientId = 'peer-' + Math.random().toString(36).substring(2, 9);
-let remoteClientId = null;
-let remoteDeviceInfo = '상대 기기';
-let isConnected = false;
 let isDirectP2P = false;
 let pingInterval = null;
 let joinBroadcastInterval = null;
+let peerPruneInterval = null;
 let candidateQueue = [];
 
-// Active transfer tracker
-let activeSendingFile = null; // Holds the File object if interrupted
+// Live Connected Peers Map: clientId -> { device, lastSeen, isDirectP2P }
+const activePeers = new Map();
 
-// Incoming / Outgoing file tracking & early chunk buffering
+// Active file transfer tracking
+let activeSendingFile = null;
 const incomingTransfers = new Map();
 const pendingEarlyChunks = new Map();
-const cachedOutgoingFiles = new Map(); // fileId -> File object for retry
+const cachedOutgoingFiles = new Map();
 
 // History Persistence Keys
 const STORAGE_KEY_CHAT = 'p2p_chat_history';
@@ -71,10 +63,10 @@ function getDeviceDescription() {
     let os = 'Unknown Device';
     if (/iPad/i.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)) os = 'iPad';
     else if (/iPhone/i.test(ua)) os = 'iPhone';
-    else if (/Macintosh|Mac OS X/i.test(ua)) os = 'MacBook / Mac';
+    else if (/Macintosh|Mac OS X/i.test(ua)) os = 'MacBook';
     else if (/Windows NT/i.test(ua)) os = 'Windows PC';
     else if (/Android/i.test(ua)) {
-        os = /Tablet|SM-T|SM-X/i.test(ua) ? 'Galaxy Tab / Tablet' : 'Android Phone';
+        os = /Tablet|SM-T|SM-X/i.test(ua) ? 'Galaxy Tab' : 'Android Phone';
     } else if (/Linux/i.test(ua)) os = 'Linux PC';
 
     return os;
@@ -86,12 +78,17 @@ const myDeviceDesc = getDeviceDescription();
 const statusBadge = document.getElementById('statusBadge');
 const statusText = document.getElementById('statusText');
 const pingBadge = document.getElementById('pingBadge');
+const lobbyView = document.getElementById('lobbyView');
+const mainAppView = document.getElementById('mainAppView');
+const lobbyKeyInput = document.getElementById('lobbyKeyInput');
+const btnGenerateKey = document.getElementById('btnGenerateKey');
+const btnEnterRoom = document.getElementById('btnEnterRoom');
 const roomCodeDisplay = document.getElementById('roomCodeDisplay');
 const qrContainer = document.getElementById('qrContainer');
-const myDeviceInfo = document.getElementById('myDeviceInfo');
 const btnCopyLink = document.getElementById('btnCopyLink');
-const joinRoomInput = document.getElementById('joinRoomInput');
-const btnJoinRoom = document.getElementById('btnJoinRoom');
+const btnLeaveRoom = document.getElementById('btnLeaveRoom');
+const peerListContainer = document.getElementById('peerListContainer');
+const peerCountBadge = document.getElementById('peerCountBadge');
 const dropZone = document.getElementById('dropZone');
 const fileInput = document.getElementById('fileInput');
 const transferList = document.getElementById('transferList');
@@ -100,15 +97,6 @@ const chatForm = document.getElementById('chatForm');
 const chatInput = document.getElementById('chatInput');
 const btnSendClipboard = document.getElementById('btnSendClipboard');
 const peerStatusLabel = document.getElementById('peerStatusLabel');
-
-// Accidental Refresh Protection
-window.addEventListener('beforeunload', (e) => {
-    if (activeSendingFile || incomingTransfers.size > 0) {
-        e.preventDefault();
-        e.returnValue = '파일 전송이 진행 중입니다. 페이지를 벗어나시겠습니까?';
-        return e.returnValue;
-    }
-});
 
 // Toast Notification
 function showToast(msg) {
@@ -132,7 +120,7 @@ function formatBytes(bytes, decimals = 1) {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
 }
 
-// Generate random 6-character room code
+// Generate random 6-character security key
 function generateRoomCode() {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
     let code = '';
@@ -142,26 +130,87 @@ function generateRoomCode() {
     return code;
 }
 
-// Initialize Application
+// -------------------------------------------------------------
+// Lobby & Initialization Flow
+// -------------------------------------------------------------
 function initApp() {
     const params = new URLSearchParams(window.location.search);
-    let roomParam = params.get('room');
+    const roomParam = params.get('room');
 
-    myDeviceInfo.textContent = `내 기기: ${myDeviceDesc}`;
+    if (roomParam && roomParam.trim().length >= 4) {
+        // Direct link / QR scan entry: Auto-fill and enter room immediately!
+        const key = roomParam.trim().toUpperCase();
+        lobbyKeyInput.value = key;
+        enterRoom(key);
+    } else {
+        // Show Lobby view to require entering/generating key
+        showLobbyView();
+    }
+}
 
-    if (!roomParam || roomParam.trim() === '') {
-        roomParam = generateRoomCode();
-        const newUrl = `${window.location.pathname}?room=${roomParam}`;
-        window.history.replaceState({}, '', newUrl);
+function showLobbyView() {
+    lobbyView.style.display = 'flex';
+    mainAppView.style.display = 'none';
+    statusText.textContent = '보안 키 입력 대기 중...';
+    statusBadge.className = 'status-badge';
+    pingBadge.style.display = 'none';
+    cleanupConnection();
+}
+
+function enterRoom(key) {
+    if (!key || key.length < 4) {
+        showToast('⚠️ 4~6자리의 보안 키를 입력해 주세요.');
+        return;
     }
 
-    currentRoomId = roomParam.trim().toUpperCase();
+    currentRoomId = key.toUpperCase();
+    const newUrl = `${window.location.pathname}?room=${currentRoomId}`;
+    window.history.replaceState({}, '', newUrl);
+
+    lobbyView.style.display = 'none';
+    mainAppView.style.display = 'grid';
     roomCodeDisplay.textContent = currentRoomId;
 
     renderQRCode();
     restoreSessionHistory();
+    renderPeerList();
+
     connectSignaling(0);
+    startPeerPruner();
 }
+
+// Key Input auto-formatting
+lobbyKeyInput.addEventListener('input', (e) => {
+    e.target.value = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+});
+
+lobbyKeyInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+        const key = lobbyKeyInput.value.trim().toUpperCase();
+        if (key.length >= 4) enterRoom(key);
+    }
+});
+
+btnGenerateKey.addEventListener('click', () => {
+    const code = generateRoomCode();
+    lobbyKeyInput.value = code;
+    lobbyKeyInput.focus();
+    showToast(`🎲 보안 키 [${code}] 생성 완료!`);
+});
+
+btnEnterRoom.addEventListener('click', () => {
+    const key = lobbyKeyInput.value.trim().toUpperCase();
+    enterRoom(key);
+});
+
+btnLeaveRoom.addEventListener('click', () => {
+    if (confirm('보안 방에서 나가시겠습니까?')) {
+        const newUrl = window.location.pathname;
+        window.history.replaceState({}, '', newUrl);
+        showLobbyView();
+        showToast('🔒 방에서 나왔습니다.');
+    }
+});
 
 function renderQRCode() {
     const fullURL = window.location.origin + window.location.pathname + `?room=${currentRoomId}`;
@@ -170,7 +219,6 @@ function renderQRCode() {
     }
 }
 
-// Copy invite link
 btnCopyLink.addEventListener('click', async () => {
     const fullURL = window.location.origin + window.location.pathname + `?room=${currentRoomId}`;
     try {
@@ -181,75 +229,116 @@ btnCopyLink.addEventListener('click', async () => {
     }
 });
 
-// Join other room
-btnJoinRoom.addEventListener('click', () => {
-    const code = joinRoomInput.value.trim().toUpperCase();
-    if (code.length >= 4) {
-        window.location.href = `${window.location.pathname}?room=${code}`;
+// -------------------------------------------------------------
+// Live Connected Peer List Management
+// -------------------------------------------------------------
+function updatePeerPresence(clientId, deviceDesc) {
+    const isNew = !activePeers.has(clientId);
+    activePeers.set(clientId, {
+        device: deviceDesc || '상대 기기',
+        lastSeen: Date.now()
+    });
+
+    if (isNew) {
+        showToast(`🎉 ${deviceDesc || '상대 기기'} 님이 입장하셨습니다!`);
+        appendSystemMessage(`[시스템] ${deviceDesc || '상대 기기'} 접속 완료`);
     }
-});
 
-// -------------------------------------------------------------
-// Session History Persistence (Chat & Files surviving Refresh)
-// -------------------------------------------------------------
-function saveChatToSession(text, direction) {
-    try {
-        const history = JSON.parse(sessionStorage.getItem(STORAGE_KEY_CHAT) || '[]');
-        history.push({ text, direction, time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) });
-        if (history.length > 50) history.shift();
-        sessionStorage.setItem(STORAGE_KEY_CHAT, JSON.stringify(history));
-    } catch (e) {}
+    renderPeerList();
 }
 
-function restoreSessionHistory() {
-    try {
-        const chatHist = JSON.parse(sessionStorage.getItem(STORAGE_KEY_CHAT) || '[]');
-        if (chatHist.length > 0) {
-            chatMessages.innerHTML = '';
-            chatHist.forEach(item => {
-                const bubble = document.createElement('div');
-                bubble.className = `message-bubble ${item.direction}`;
-                const textSpan = document.createElement('span');
-                textSpan.textContent = item.text;
-                bubble.appendChild(textSpan);
-                const meta = document.createElement('div');
-                meta.className = 'message-meta';
-                meta.textContent = item.time;
-                bubble.appendChild(meta);
-                chatMessages.appendChild(bubble);
-            });
-            chatMessages.scrollTop = chatMessages.scrollHeight;
-        }
+function startPeerPruner() {
+    if (peerPruneInterval) clearInterval(peerPruneInterval);
+    peerPruneInterval = setInterval(() => {
+        const now = Date.now();
+        let changed = false;
 
-        const fileHist = JSON.parse(sessionStorage.getItem(STORAGE_KEY_FILES) || '[]');
-        fileHist.forEach(item => {
-            const div = document.createElement('div');
-            div.className = 'transfer-item';
-            div.innerHTML = `
-                <div class="transfer-header">
-                    <span class="file-name">${item.icon} ${item.name}</span>
-                    <span class="file-meta">${formatBytes(item.size)}</span>
-                </div>
-                <div class="progress-bar-bg">
-                    <div class="progress-bar-fill" style="width: 100%; background: var(--success);"></div>
-                </div>
-                <div class="transfer-footer">
-                    <span>✅ 완료 (${formatBytes(item.size)})</span>
-                    <span>100%</span>
-                </div>
-            `;
-            transferList.appendChild(div);
+        activePeers.forEach((peerData, clientId) => {
+            // If peer hasn't sent heartbeat in 3.5 seconds, consider disconnected
+            if (now - peerData.lastSeen > 3500) {
+                showToast(`👋 ${peerData.device} 님의 연결이 종료되었습니다.`);
+                appendSystemMessage(`[시스템] ${peerData.device} 퇴장`);
+                activePeers.delete(clientId);
+                changed = true;
+
+                if (activePeers.size === 0) {
+                    handleAllPeersDisconnected();
+                }
+            }
         });
-    } catch (e) {}
+
+        if (changed) {
+            renderPeerList();
+        }
+    }, 1000);
 }
 
-function saveFileToSession(name, size, direction) {
-    try {
-        const history = JSON.parse(sessionStorage.getItem(STORAGE_KEY_FILES) || '[]');
-        history.unshift({ name, size, icon: direction === 'incoming' ? '📥' : '📤' });
-        if (history.length > 20) history.pop();
-        sessionStorage.setItem(STORAGE_KEY_FILES, JSON.stringify(history));
-    } catch (e) {}
+function renderPeerList() {
+    if (!peerListContainer) return;
+    peerListContainer.innerHTML = '';
+
+    // 1. My Device Item
+    const myItem = document.createElement('div');
+    myItem.className = 'peer-item me';
+    myItem.innerHTML = `
+        <div class="peer-info">
+            <span class="peer-dot"></span>
+            <span>💻 ${myDeviceDesc}</span>
+        </div>
+        <span class="peer-status-tag">나</span>
+    `;
+    peerListContainer.appendChild(myItem);
+
+    // 2. Connected Remote Peers
+    activePeers.forEach((peerData, clientId) => {
+        const item = document.createElement('div');
+        item.className = 'peer-item';
+        const icon = /iPhone|Android Phone/i.test(peerData.device) ? '📱' : (/iPad|Tab/i.test(peerData.device) ? '📱' : '💻');
+        const tagText = isDirectP2P ? '🟢 P2P 직통' : '🟢 연결됨';
+
+        item.innerHTML = `
+            <div class="peer-info">
+                <span class="peer-dot"></span>
+                <span>${icon} ${peerData.device}</span>
+            </div>
+            <span class="peer-status-tag">${tagText}</span>
+        `;
+        peerListContainer.appendChild(item);
+    });
+
+    const totalCount = activePeers.size + 1;
+    peerCountBadge.textContent = `${totalCount}명 접속 중`;
+
+    if (activePeers.size > 0) {
+        const firstPeer = activePeers.values().next().value;
+        updateStatus('connected', `연결됨 (${firstPeer.device})`);
+        peerStatusLabel.textContent = `1:1 (${firstPeer.device})`;
+    } else {
+        updateStatus('waiting', `상대방 대기 중 [키: ${currentRoomId}]`);
+        peerStatusLabel.textContent = 'E2EE 보안';
+    }
+}
+
+function handleAllPeersDisconnected() {
+    cleanupPeerConnection();
+    stopPing();
+    updateStatus('waiting', `상대방 대기 중 [키: ${currentRoomId}]`);
+    peerStatusLabel.textContent = 'E2EE 보안';
+
+    if (activeSendingFile) {
+        notifyInterruptedTransfer();
+    }
+}
+
+function appendSystemMessage(text) {
+    const bubble = document.createElement('div');
+    bubble.className = 'message-bubble incoming';
+    bubble.style.background = 'rgba(51, 65, 85, 0.4)';
+    bubble.style.color = 'var(--text-muted)';
+    bubble.style.fontSize = '0.8rem';
+    bubble.textContent = text;
+    chatMessages.appendChild(bubble);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
 }
 
 // -------------------------------------------------------------
@@ -272,13 +361,11 @@ function connectSignaling(brokerIndex) {
         return;
     }
 
-    const roomTopic = `p2pshare/stable/${currentRoomId}/#`;
+    const roomTopic = `p2pshare/v7/${currentRoomId}/#`;
 
     mqttClient.on('connect', () => {
         console.log('[Signaling] Connected to Broker:', brokerUrl);
-        if (!isConnected) {
-            updateStatus('waiting', `상대방 대기 중 [방코드: ${currentRoomId}]`);
-        }
+        renderPeerList();
 
         mqttClient.subscribe(roomTopic, (err) => {
             if (!err) {
@@ -318,7 +405,6 @@ function startPresenceBroadcast() {
     announcePresence(false);
     if (joinBroadcastInterval) clearInterval(joinBroadcastInterval);
     joinBroadcastInterval = setInterval(() => {
-        // Broadcast presence continuously so refreshed peers find us in < 1 second!
         announcePresence(false);
     }, 1200);
 }
@@ -332,7 +418,7 @@ function announcePresence(isReply = false) {
 
 function publishSignal(type, data = {}) {
     if (!mqttClient || !mqttClient.connected) return;
-    const topic = `p2pshare/stable/${currentRoomId}/${type}`;
+    const topic = `p2pshare/v7/${currentRoomId}/${type}`;
     const payload = JSON.stringify({
         type: type,
         sender: myClientId,
@@ -342,16 +428,26 @@ function publishSignal(type, data = {}) {
     mqttClient.publish(topic, payload);
 }
 
+function getPrimaryRemoteClientId() {
+    if (activePeers.size > 0) {
+        return activePeers.keys().next().value;
+    }
+    return null;
+}
+
 // -------------------------------------------------------------
-// Unified Channel Send (Direct WebRTC with Instant MQTT Relay Fallback)
+// Unified Channel Send
 // -------------------------------------------------------------
 function channelSend(arrayBuffer) {
     if (dataChannel && dataChannel.readyState === 'open') {
         dataChannel.send(arrayBuffer);
-    } else if (mqttClient && mqttClient.connected && remoteClientId) {
-        const topic = `p2pshare/stable/${currentRoomId}/data/${remoteClientId}`;
-        const uint8 = new Uint8Array(arrayBuffer);
-        mqttClient.publish(topic, uint8);
+    } else if (mqttClient && mqttClient.connected) {
+        const targetPeerId = getPrimaryRemoteClientId();
+        if (targetPeerId) {
+            const topic = `p2pshare/v7/${currentRoomId}/data/${targetPeerId}`;
+            const uint8 = new Uint8Array(arrayBuffer);
+            mqttClient.publish(topic, uint8);
+        }
     }
 }
 
@@ -382,90 +478,38 @@ function cleanupPeerConnection() {
     isDirectP2P = false;
 }
 
-function handlePeerDisconnection() {
-    console.log('[P2P] Peer disconnected, resetting state to waiting...');
-    isConnected = false;
-    isDirectP2P = false;
+function cleanupConnection() {
     cleanupPeerConnection();
     stopPing();
-
-    updateStatus('waiting', `상대방 재연결 대기 중... [방: ${currentRoomId}]`);
-    peerStatusLabel.textContent = '1:1 P2P';
-
-    if (activeSendingFile) {
-        showToast('⚠️ 상대방이 새로고침하여 전송이 중단되었습니다.');
-        notifyInterruptedTransfer();
-    } else {
-        showToast('👋 상대방 연결이 끊어졌습니다. 자동 재연결 대기 중...');
+    if (joinBroadcastInterval) clearInterval(joinBroadcastInterval);
+    if (peerPruneInterval) clearInterval(peerPruneInterval);
+    if (mqttClient) {
+        try { mqttClient.end(true); } catch(e){}
+        mqttClient = null;
     }
-
-    // Ensure presence broadcast is active for instant reconnection
-    startPresenceBroadcast();
+    activePeers.clear();
 }
-
-function notifyInterruptedTransfer() {
-    if (!activeSendingFile) return;
-    const fileId = activeSendingFile.fileId;
-    const fileObj = activeSendingFile.file;
-
-    const item = document.getElementById(`transfer-${fileId}`);
-    if (item) {
-        const status = item.querySelector('.transfer-footer span:first-child');
-        const speed = item.querySelector('.transfer-footer span:last-child');
-        const bar = item.querySelector('.progress-bar-fill');
-
-        if (bar) bar.style.background = 'var(--warning)';
-        if (speed) speed.textContent = '중단됨';
-        if (status) {
-            status.innerHTML = `<span style="color: #f59e0b;">⚠️ 상대방 새로고침으로 중단됨</span> <button onclick="window.retryFileTransfer(${fileId})" style="margin-left: 8px; padding: 2px 8px; font-size: 0.75rem; background: var(--accent); color: #0f172a; border-radius: 4px; border:none; cursor:pointer;">🔄 다시 보내기</button>`;
-        }
-    }
-    activeSendingFile = null;
-}
-
-window.retryFileTransfer = function(fileId) {
-    const file = cachedOutgoingFiles.get(fileId);
-    if (file) {
-        if (!isConnected) {
-            showToast('⚠️ 먼저 상대방 기기가 다시 연결될 때까지 잠시 기다려 주세요.');
-            return;
-        }
-        sendFile(file);
-    }
-};
 
 async function handleSignalingMessage(msg) {
     switch (msg.type) {
         case 'presence':
-            // If peer refreshed or reconnected with new session ID, clean up old dead peer connection
-            if (remoteClientId !== msg.sender || !peerConnection || peerConnection.signalingState === 'closed') {
-                cleanupPeerConnection();
-            }
+            updatePeerPresence(msg.sender, msg.device);
 
-            remoteClientId = msg.sender;
-            remoteDeviceInfo = msg.device || '상대 기기';
-            peerStatusLabel.textContent = `1:1 (${remoteDeviceInfo})`;
-
-            // Reply immediately so newly joined peer knows we are online
+            // Mutual handshake reply
             if (!msg.isReply) {
                 announcePresence(true);
             }
 
-            if (!isConnected) {
-                isConnected = true;
-                updateStatus('connected', `연결됨 (${remoteDeviceInfo})`);
-                showToast(`🎉 ${remoteDeviceInfo}와 1:1 연결 완료!`);
-                startPing();
-            }
+            startPing();
 
-            // Initiate WebRTC upgrade
-            if (myClientId < remoteClientId && !peerConnection) {
-                createPeerConnection();
+            // Initiate WebRTC upgrade if smaller ClientId
+            if (myClientId < msg.sender && !peerConnection) {
+                createPeerConnection(msg.sender);
                 createDataChannel();
                 try {
                     const offer = await peerConnection.createOffer();
                     await peerConnection.setLocalDescription(offer);
-                    publishSignal('offer', { sdp: offer, target: remoteClientId });
+                    publishSignal('offer', { sdp: offer, target: msg.sender });
                 } catch (e) {
                     console.warn('Offer error:', e);
                 }
@@ -474,18 +518,9 @@ async function handleSignalingMessage(msg) {
 
         case 'offer':
             if (msg.target && msg.target !== myClientId) return;
-            if (remoteClientId !== msg.sender) {
-                cleanupPeerConnection();
-            }
+            updatePeerPresence(msg.sender, msg.device);
 
-            remoteClientId = msg.sender;
-            remoteDeviceInfo = msg.device || '상대 기기';
-
-            isConnected = true;
-            updateStatus('connected', `연결됨 (${remoteDeviceInfo})`);
-            startPing();
-
-            createPeerConnection();
+            createPeerConnection(msg.sender);
             try {
                 await peerConnection.setRemoteDescription(new RTCSessionDescription(msg.sdp));
                 await flushCandidateQueue();
@@ -539,14 +574,14 @@ async function flushCandidateQueue() {
     }
 }
 
-function createPeerConnection() {
+function createPeerConnection(targetClientId) {
     if (peerConnection) return;
 
     peerConnection = new RTCPeerConnection(rtcConfig);
 
     peerConnection.onicecandidate = (event) => {
         if (event.candidate) {
-            publishSignal('candidate', { candidate: event.candidate, target: remoteClientId });
+            publishSignal('candidate', { candidate: event.candidate, target: targetClientId });
         }
     };
 
@@ -554,9 +589,10 @@ function createPeerConnection() {
         console.log('[WebRTC] ICE State:', peerConnection.iceConnectionState);
         if (peerConnection.iceConnectionState === 'connected' || peerConnection.iceConnectionState === 'completed') {
             isDirectP2P = true;
-            updateStatus('connected', `연결됨 (P2P 직통 • ${remoteDeviceInfo})`);
+            renderPeerList();
         } else if (peerConnection.iceConnectionState === 'disconnected' || peerConnection.iceConnectionState === 'closed' || peerConnection.iceConnectionState === 'failed') {
-            handlePeerDisconnection();
+            isDirectP2P = false;
+            renderPeerList();
         }
     };
 
@@ -581,12 +617,13 @@ function setDataChannel(channel) {
     dataChannel.onopen = () => {
         console.log('[WebRTC] Direct DataChannel OPENED!');
         isDirectP2P = true;
-        updateStatus('connected', `연결됨 (P2P 직통 • ${remoteDeviceInfo})`);
+        renderPeerList();
     };
 
     dataChannel.onclose = () => {
         console.log('[WebRTC] DataChannel closed');
-        handlePeerDisconnection();
+        isDirectP2P = false;
+        renderPeerList();
     };
 
     dataChannel.onmessage = (event) => {
@@ -614,7 +651,7 @@ function updateStatus(state, text) {
 function startPing() {
     stopPing();
     pingInterval = setInterval(() => {
-        if (isConnected) {
+        if (activePeers.size > 0) {
             const now = Date.now() & 0xFFFFFFFF;
             channelSend(ProtocolCodec.encodePing(now));
         }
@@ -664,9 +701,7 @@ function handleIncomingPacket(arrayBuffer) {
             }
 
             case PacketType.PING: {
-                if (isConnected) {
-                    channelSend(ProtocolCodec.encodePong(packet.seqOrLen));
-                }
+                channelSend(ProtocolCodec.encodePong(packet.seqOrLen));
                 break;
             }
 
@@ -708,8 +743,8 @@ chatForm.addEventListener('submit', (e) => {
     const text = chatInput.value.trim();
     if (!text) return;
 
-    if (!isConnected) {
-        showToast('⚠️ 기기가 아직 연결되지 않았습니다.');
+    if (activePeers.size === 0) {
+        showToast('⚠️ 접속 중인 상대방이 없습니다.');
         return;
     }
 
@@ -726,8 +761,8 @@ btnSendClipboard.addEventListener('click', async () => {
     try {
         const text = await navigator.clipboard.readText();
         if (text && text.trim()) {
-            if (!isConnected) {
-                showToast('⚠️ 기기가 아직 연결되지 않았습니다.');
+            if (activePeers.size === 0) {
+                showToast('⚠️ 접속 중인 상대방이 없습니다.');
                 return;
             }
             const packetBuf = ProtocolCodec.encodeChat(text);
@@ -767,8 +802,8 @@ fileInput.addEventListener('change', (e) => {
 });
 
 function handleFilesSelected(files) {
-    if (!isConnected) {
-        showToast('⚠️ 먼저 상대방 기기를 연결해 주세요!');
+    if (activePeers.size === 0) {
+        showToast('⚠️ 먼저 상대방 기기를 같은 키로 연결해 주세요!');
         return;
     }
 
@@ -781,7 +816,6 @@ async function sendFile(file) {
     const fileId = Math.floor(Math.random() * 0x7FFFFFFF);
     const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
     
-    // Cache for 1-click retry
     cachedOutgoingFiles.set(fileId, file);
     activeSendingFile = { fileId, file };
 
@@ -804,8 +838,7 @@ async function sendFile(file) {
     let lastBytes = 0;
 
     while (offset < file.size) {
-        // Abort if peer disconnected
-        if (!isConnected) {
+        if (activePeers.size === 0) {
             console.warn('[P2P] SendFile aborted due to disconnection');
             notifyInterruptedTransfer();
             return;
@@ -846,6 +879,36 @@ async function sendFile(file) {
     showToast(`✅ ${file.name} 전송 완료!`);
 }
 
+function notifyInterruptedTransfer() {
+    if (!activeSendingFile) return;
+    const fileId = activeSendingFile.fileId;
+
+    const item = document.getElementById(`transfer-${fileId}`);
+    if (item) {
+        const status = item.querySelector('.transfer-footer span:first-child');
+        const speed = item.querySelector('.transfer-footer span:last-child');
+        const bar = item.querySelector('.progress-bar-fill');
+
+        if (bar) bar.style.background = 'var(--warning)';
+        if (speed) speed.textContent = '중단됨';
+        if (status) {
+            status.innerHTML = `<span style="color: #f59e0b;">⚠️ 상대방 연결 끊김으로 중단됨</span> <button onclick="window.retryFileTransfer(${fileId})" style="margin-left: 8px; padding: 2px 8px; font-size: 0.75rem; background: var(--accent); color: #0f172a; border-radius: 4px; border:none; cursor:pointer;">🔄 다시 보내기</button>`;
+        }
+    }
+    activeSendingFile = null;
+}
+
+window.retryFileTransfer = function(fileId) {
+    const file = cachedOutgoingFiles.get(fileId);
+    if (file) {
+        if (activePeers.size === 0) {
+            showToast('⚠️ 먼저 상대방 기기가 다시 연결될 때까지 기다려 주세요.');
+            return;
+        }
+        sendFile(file);
+    }
+};
+
 function waitForBufferDrain() {
     return new Promise((resolve) => {
         dataChannel.onbufferedamountlow = () => {
@@ -856,7 +919,7 @@ function waitForBufferDrain() {
 }
 
 // -------------------------------------------------------------
-// Incoming File Handling with Early Chunk Queuing
+// Incoming File Handling
 // -------------------------------------------------------------
 function onReceiveFileMeta(fileId, meta) {
     const item = {
@@ -947,7 +1010,7 @@ function finalizeIncomingFile(fileId, item) {
         a.click();
         a.remove();
     } catch (e) {
-        console.warn('Auto download error, fallback to click:', e);
+        console.warn('Auto download error:', e);
     }
 
     showToast(`🎉 ${item.name} 수신 완료!`);
@@ -1011,6 +1074,51 @@ function updateTransferUI(container, percent, bytesTransferred, totalBytes, spee
             speed.textContent = `${formatBytes(speedBytesPerSec)}/s`;
         }
     }
+}
+
+// -------------------------------------------------------------
+// Session History Persistence
+// -------------------------------------------------------------
+function restoreSessionHistory() {
+    try {
+        const chatHist = JSON.parse(sessionStorage.getItem(STORAGE_KEY_CHAT) || '[]');
+        if (chatHist.length > 0) {
+            chatMessages.innerHTML = '';
+            chatHist.forEach(item => {
+                const bubble = document.createElement('div');
+                bubble.className = `message-bubble ${item.direction}`;
+                const textSpan = document.createElement('span');
+                textSpan.textContent = item.text;
+                bubble.appendChild(textSpan);
+                const meta = document.createElement('div');
+                meta.className = 'message-meta';
+                meta.textContent = item.time;
+                bubble.appendChild(meta);
+                chatMessages.appendChild(bubble);
+            });
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        const fileHist = JSON.parse(sessionStorage.getItem(STORAGE_KEY_FILES) || '[]');
+        fileHist.forEach(item => {
+            const div = document.createElement('div');
+            div.className = 'transfer-item';
+            div.innerHTML = `
+                <div class="transfer-header">
+                    <span class="file-name">${item.icon} ${item.name}</span>
+                    <span class="file-meta">${formatBytes(item.size)}</span>
+                </div>
+                <div class="progress-bar-bg">
+                    <div class="progress-bar-fill" style="width: 100%; background: var(--success);"></div>
+                </div>
+                <div class="transfer-footer">
+                    <span>✅ 완료 (${formatBytes(item.size)})</span>
+                    <span>100%</span>
+                </div>
+            `;
+            transferList.appendChild(div);
+        });
+    } catch (e) {}
 }
 
 // Start application safely
