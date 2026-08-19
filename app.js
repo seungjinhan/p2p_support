@@ -1,10 +1,5 @@
 /**
- * WebRTC P2P DataChannel Engine with Zero-Fail Hybrid Relay
- * 
- * 1. Instant 0.1s Zero-Wait Pairing: Connects immediately upon discovery.
- * 2. Background WebRTC Upgrade: Attempts direct STUN/TURN P2P hole-punching for maximum bandwidth.
- * 3. Transparent Fallback: If mobile carrier has Symmetric NAT / CGNAT, automatically relays seamlessly.
- * 4. 100% Connection Guarantee on iOS Safari, Android Chrome, Mac, Windows, iPad, Galaxy Tab.
+ * WebRTC P2P DataChannel Engine with Zero-Fail Hybrid Relay & Live UI Progress
  */
 
 // Configuration
@@ -277,7 +272,6 @@ async function handleSignalingMessage(msg) {
             remoteDeviceInfo = msg.device || '상대 기기';
             peerStatusLabel.textContent = `1:1 (${remoteDeviceInfo})`;
 
-            // Instant Connection: Establish pairing immediately!
             if (!isConnected) {
                 isConnected = true;
                 updateStatus('connected', `연결됨 (${remoteDeviceInfo})`);
@@ -285,7 +279,6 @@ async function handleSignalingMessage(msg) {
                 startPing();
             }
 
-            // Start WebRTC direct P2P upgrade in background
             if (myClientId < remoteClientId && !peerConnection) {
                 console.log('[WebRTC] Initiating P2P upgrade...');
                 createPeerConnection();
@@ -636,21 +629,20 @@ async function sendFile(file) {
         const percent = Math.min(100, Math.floor((offset / file.size) * 100));
         const now = Date.now();
         const timeDiff = (now - lastTime) / 1000;
-        if (timeDiff > 0.3 || offset === file.size) {
+        if (timeDiff > 0.1 || offset === file.size) {
             const bytesDiff = offset - lastBytes;
-            const speed = bytesDiff / timeDiff; // B/s
-            updateTransferUI(transferItem, percent, offset, file.size, speed);
+            const speed = timeDiff > 0 ? (bytesDiff / timeDiff) : 0;
+            updateTransferUI(transferItem, percent, offset, file.size, speed, false, null, 'outgoing');
             lastTime = now;
             lastBytes = offset;
         }
 
-        // Small yield to maintain UI responsiveness
-        if (chunkIndex % 10 === 0) {
-            await new Promise(r => setTimeout(r, 4));
+        if (chunkIndex % 8 === 0) {
+            await new Promise(r => setTimeout(r, 2));
         }
     }
 
-    updateTransferUI(transferItem, 100, file.size, file.size, 0, true);
+    updateTransferUI(transferItem, 100, file.size, file.size, 0, true, null, 'outgoing');
     showToast(`✅ ${file.name} 전송 완료!`);
 }
 
@@ -664,7 +656,7 @@ function waitForBufferDrain() {
 }
 
 // -------------------------------------------------------------
-// Incoming File Handling
+// Incoming File Handling with Live Progress & Download Button
 // -------------------------------------------------------------
 function onReceiveFileMeta(fileId, meta) {
     const item = {
@@ -683,6 +675,11 @@ function onReceiveFileMeta(fileId, meta) {
 
     incomingTransfers.set(fileId, item);
     showToast(`📥 파일 수신 시작: ${meta.name}`);
+
+    // Scroll transfer into view so user sees the progress immediately
+    if (item.ui) {
+        item.ui.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
 }
 
 function onReceiveFileChunk(fileId, chunkIndex, chunkData) {
@@ -697,10 +694,10 @@ function onReceiveFileChunk(fileId, chunkIndex, chunkData) {
     const now = Date.now();
     const timeDiff = (now - item.lastTime) / 1000;
 
-    if (timeDiff > 0.3 || item.chunksReceived === item.totalChunks) {
+    if (timeDiff > 0.1 || item.chunksReceived === item.totalChunks) {
         const bytesDiff = item.receivedBytes - item.lastBytes;
-        const speed = bytesDiff / timeDiff;
-        updateTransferUI(item.ui, percent, item.receivedBytes, item.size, speed);
+        const speed = timeDiff > 0 ? (bytesDiff / timeDiff) : 0;
+        updateTransferUI(item.ui, percent, item.receivedBytes, item.size, speed, false, null, 'incoming');
         item.lastTime = now;
         item.lastBytes = item.receivedBytes;
     }
@@ -711,19 +708,24 @@ function onReceiveFileChunk(fileId, chunkIndex, chunkData) {
 }
 
 function finalizeIncomingFile(fileId, item) {
-    updateTransferUI(item.ui, 100, item.size, item.size, 0, true);
-
     const blob = new Blob(item.chunks, { type: item.type || 'application/octet-stream' });
     const downloadUrl = URL.createObjectURL(blob);
 
-    const a = document.createElement('a');
-    a.href = downloadUrl;
-    a.download = item.name;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+    updateTransferUI(item.ui, 100, item.size, item.size, 0, true, downloadUrl, 'incoming', item.name);
 
-    showToast(`🎉 ${item.name} 다운로드 완료!`);
+    // Auto trigger download
+    try {
+        const a = document.createElement('a');
+        a.href = downloadUrl;
+        a.download = item.name;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+    } catch (e) {
+        console.warn('Auto download error, user can click download button:', e);
+    }
+
+    showToast(`🎉 ${item.name} 수신 완료!`);
     incomingTransfers.delete(fileId);
 }
 
@@ -747,7 +749,7 @@ function createTransferUI(fileId, name, size, direction) {
             <div class="progress-bar-fill" id="pbar-${fileId}"></div>
         </div>
         <div class="transfer-footer">
-            <span id="pstatus-${fileId}">${directionText} (0%)</span>
+            <span id="pstatus-${fileId}">${directionText} 0% (0 B / ${formatBytes(size)})</span>
             <span id="pspeed-${fileId}">-- MB/s</span>
         </div>
     `;
@@ -756,21 +758,33 @@ function createTransferUI(fileId, name, size, direction) {
     return div;
 }
 
-function updateTransferUI(container, percent, bytesTransferred, totalBytes, speedBytesPerSec, isComplete = false) {
+function updateTransferUI(container, percent, bytesTransferred, totalBytes, speedBytesPerSec, isComplete = false, downloadUrl = null, direction = 'outgoing', fileName = '') {
     if (!container) return;
     const bar = container.querySelector('.progress-bar-fill');
     const status = container.querySelector('.transfer-footer span:first-child');
     const speed = container.querySelector('.transfer-footer span:last-child');
 
-    if (bar) bar.style.width = `${percent}%`;
+    if (bar) {
+        bar.style.width = `${percent}%`;
+    }
+
+    const directionLabel = direction === 'outgoing' ? '보내는 중' : '받는 중';
 
     if (isComplete) {
-        if (status) status.textContent = `완료 (${formatBytes(totalBytes)})`;
-        if (speed) speed.textContent = '100%';
         if (bar) bar.style.background = 'var(--success)';
+        if (direction === 'incoming' && downloadUrl) {
+            status.innerHTML = `✅ 수신 완료 (${formatBytes(totalBytes)}) <a href="${downloadUrl}" download="${fileName}" style="margin-left: 8px; color: #38bdf8; text-decoration: underline; font-weight: bold;">[💾 파일 다시 저장]</a>`;
+        } else {
+            status.textContent = `✅ 전송 완료 (${formatBytes(totalBytes)})`;
+        }
+        if (speed) speed.textContent = '100%';
     } else {
-        if (status) status.textContent = `${percent}% (${formatBytes(bytesTransferred)} / ${formatBytes(totalBytes)})`;
-        if (speed) speed.textContent = `${formatBytes(speedBytesPerSec)}/s`;
+        if (status) {
+            status.textContent = `${directionLabel} ${percent}% (${formatBytes(bytesTransferred)} / ${formatBytes(totalBytes)})`;
+        }
+        if (speed) {
+            speed.textContent = `${formatBytes(speedBytesPerSec)}/s`;
+        }
     }
 }
 
