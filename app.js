@@ -282,8 +282,22 @@ function startPeerPruner() {
     }, 1000);
 }
 
+let lastRenderedPeerKeys = '';
+
 function renderPeerList() {
     if (!peerListContainer) return;
+
+    // Check if peer list or direct P2P status has changed before re-rendering DOM
+    const currentKeys = Array.from(activePeers.entries())
+        .map(([id, p]) => `${id}:${p.device}`)
+        .sort()
+        .join('|') + `_direct:${isDirectP2P}`;
+
+    if (currentKeys === lastRenderedPeerKeys) {
+        return; // No change in connected peers: skip DOM wipe to completely eliminate flickering!
+    }
+    lastRenderedPeerKeys = currentKeys;
+
     peerListContainer.innerHTML = '';
 
     // 1. My Device Item
