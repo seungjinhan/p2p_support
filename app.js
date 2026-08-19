@@ -1,5 +1,5 @@
 /**
- * WebRTC P2P DataChannel Engine with Zero-Fail Hybrid Relay, State Persistence & Unload Protection
+ * WebRTC P2P DataChannel Engine with Zero-Fail Hybrid Relay & Mutual Handshake
  */
 
 // Configuration
@@ -46,16 +46,14 @@ let pingInterval = null;
 let joinBroadcastInterval = null;
 let candidateQueue = [];
 
-// Active transfer tracker for unload protection
+// Active transfer tracker
 let isTransferringActive = false;
 
 // Incoming / Outgoing file tracking & early chunk buffering
 const incomingTransfers = new Map();
-const pendingEarlyChunks = new Map(); // fileId -> Map(seq -> chunkData)
-const outgoingTransfers = new Map();
+const pendingEarlyChunks = new Map();
 
 // History Persistence Keys
-const STORAGE_KEY_ROOM = 'p2p_room_code';
 const STORAGE_KEY_CHAT = 'p2p_chat_history';
 const STORAGE_KEY_FILES = 'p2p_files_history';
 
@@ -95,7 +93,7 @@ const chatInput = document.getElementById('chatInput');
 const btnSendClipboard = document.getElementById('btnSendClipboard');
 const peerStatusLabel = document.getElementById('peerStatusLabel');
 
-// Accidental Refresh / Leave Page Protection
+// Accidental Refresh Protection
 window.addEventListener('beforeunload', (e) => {
     if (isTransferringActive || incomingTransfers.size > 0) {
         e.preventDefault();
@@ -136,7 +134,7 @@ function generateRoomCode() {
     return code;
 }
 
-// Initialize Application with Refresh Protection
+// Initialize Application
 function initApp() {
     const params = new URLSearchParams(window.location.search);
     let roomParam = params.get('room');
@@ -144,18 +142,12 @@ function initApp() {
     myDeviceInfo.textContent = `내 기기: ${myDeviceDesc}`;
 
     if (!roomParam || roomParam.trim() === '') {
-        const savedRoom = localStorage.getItem(STORAGE_KEY_ROOM);
-        if (savedRoom && savedRoom.length === 6) {
-            roomParam = savedRoom;
-        } else {
-            roomParam = generateRoomCode();
-        }
+        roomParam = generateRoomCode();
         const newUrl = `${window.location.pathname}?room=${roomParam}`;
         window.history.replaceState({}, '', newUrl);
     }
 
     currentRoomId = roomParam.trim().toUpperCase();
-    localStorage.setItem(STORAGE_KEY_ROOM, currentRoomId);
     roomCodeDisplay.textContent = currentRoomId;
 
     renderQRCode();
@@ -185,7 +177,6 @@ btnCopyLink.addEventListener('click', async () => {
 btnJoinRoom.addEventListener('click', () => {
     const code = joinRoomInput.value.trim().toUpperCase();
     if (code.length >= 4) {
-        localStorage.setItem(STORAGE_KEY_ROOM, code);
         window.location.href = `${window.location.pathname}?room=${code}`;
     }
 });
@@ -254,7 +245,7 @@ function saveFileToSession(name, size, direction) {
 }
 
 // -------------------------------------------------------------
-// Global MQTT Signaling & Auto-Connect
+// Global MQTT Signaling with Mutual Handshake (Zero-Fail)
 // -------------------------------------------------------------
 function connectSignaling(brokerIndex) {
     const brokerUrl = BROKER_URLS[brokerIndex % BROKER_URLS.length];
@@ -265,15 +256,15 @@ function connectSignaling(brokerIndex) {
             clientId: 'p2p_' + myClientId,
             clean: true,
             connectTimeout: 5000,
-            reconnectPeriod: 3000
+            reconnectPeriod: 2500
         });
     } catch (e) {
         console.error('MQTT Connect error:', e);
-        setTimeout(() => connectSignaling(brokerIndex + 1), 2000);
+        setTimeout(() => connectSignaling(brokerIndex + 1), 1500);
         return;
     }
 
-    const roomTopic = `p2pshare/v5/${currentRoomId}/#`;
+    const roomTopic = `p2pshare/v6/${currentRoomId}/#`;
 
     mqttClient.on('connect', () => {
         console.log('[Signaling] Connected to Broker:', brokerUrl);
@@ -283,12 +274,11 @@ function connectSignaling(brokerIndex) {
 
         mqttClient.subscribe(roomTopic, (err) => {
             if (!err) {
-                announcePresence();
+                announcePresence(false);
                 if (joinBroadcastInterval) clearInterval(joinBroadcastInterval);
                 joinBroadcastInterval = setInterval(() => {
-                    if (!isConnected) announcePresence();
-                    else clearInterval(joinBroadcastInterval);
-                }, 2000);
+                    if (!isConnected) announcePresence(false);
+                }, 1500);
             }
         });
     });
@@ -320,15 +310,16 @@ function connectSignaling(brokerIndex) {
     });
 }
 
-function announcePresence() {
+function announcePresence(isReply = false) {
     publishSignal('presence', {
-        device: myDeviceDesc
+        device: myDeviceDesc,
+        isReply: isReply
     });
 }
 
 function publishSignal(type, data = {}) {
     if (!mqttClient || !mqttClient.connected) return;
-    const topic = `p2pshare/v5/${currentRoomId}/${type}`;
+    const topic = `p2pshare/v6/${currentRoomId}/${type}`;
     const payload = JSON.stringify({
         type: type,
         sender: myClientId,
@@ -345,14 +336,14 @@ function channelSend(arrayBuffer) {
     if (dataChannel && dataChannel.readyState === 'open') {
         dataChannel.send(arrayBuffer);
     } else if (mqttClient && mqttClient.connected && remoteClientId) {
-        const topic = `p2pshare/v5/${currentRoomId}/data/${remoteClientId}`;
+        const topic = `p2pshare/v6/${currentRoomId}/data/${remoteClientId}`;
         const uint8 = new Uint8Array(arrayBuffer);
         mqttClient.publish(topic, uint8);
     }
 }
 
 // -------------------------------------------------------------
-// WebRTC Signaling & Connection
+// WebRTC Signaling & Mutual Handshake
 // -------------------------------------------------------------
 async function handleSignalingMessage(msg) {
     switch (msg.type) {
@@ -361,6 +352,11 @@ async function handleSignalingMessage(msg) {
             remoteDeviceInfo = msg.device || '상대 기기';
             peerStatusLabel.textContent = `1:1 (${remoteDeviceInfo})`;
 
+            // MUTUAL HANDSHAKE: Always reply if this wasn't already a reply!
+            if (!msg.isReply) {
+                announcePresence(true);
+            }
+
             if (!isConnected) {
                 isConnected = true;
                 updateStatus('connected', `연결됨 (${remoteDeviceInfo})`);
@@ -368,8 +364,8 @@ async function handleSignalingMessage(msg) {
                 startPing();
             }
 
+            // Start WebRTC direct P2P upgrade in background
             if (myClientId < remoteClientId && !peerConnection) {
-                console.log('[WebRTC] Initiating P2P upgrade...');
                 createPeerConnection();
                 createDataChannel();
                 try {
@@ -384,7 +380,6 @@ async function handleSignalingMessage(msg) {
 
         case 'offer':
             if (msg.target && msg.target !== myClientId) return;
-            console.log('[WebRTC] Received Offer');
             remoteClientId = msg.sender;
             remoteDeviceInfo = msg.device || '상대 기기';
 
@@ -408,7 +403,6 @@ async function handleSignalingMessage(msg) {
 
         case 'answer':
             if (msg.target && msg.target !== myClientId) return;
-            console.log('[WebRTC] Received Answer');
             if (peerConnection && peerConnection.signalingState !== 'stable') {
                 try {
                     await peerConnection.setRemoteDescription(new RTCSessionDescription(msg.sdp));
@@ -740,7 +734,6 @@ async function sendFile(file) {
             lastBytes = offset;
         }
 
-        // Adaptive pacing: 4ms per chunk ensures zero dropped packets on public brokers & WebRTC
         if (chunkIndex % 3 === 0) {
             await new Promise(r => setTimeout(r, 4));
         }
@@ -808,7 +801,7 @@ function onReceiveFileMeta(fileId, meta) {
 function onReceiveFileChunk(fileId, chunkIndex, chunkData) {
     let item = incomingTransfers.get(fileId);
 
-    // If Meta hasn't arrived yet, buffer the chunk!
+    // Buffer early chunks
     if (!item) {
         if (!pendingEarlyChunks.has(fileId)) {
             pendingEarlyChunks.set(fileId, new Map());
@@ -847,7 +840,6 @@ function finalizeIncomingFile(fileId, item) {
     updateTransferUI(item.ui, 100, item.size, item.size, 0, true, downloadUrl, 'incoming', item.name);
     saveFileToSession(item.name, item.size, 'incoming');
 
-    // Auto download
     try {
         const a = document.createElement('a');
         a.href = downloadUrl;
