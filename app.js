@@ -2,7 +2,7 @@
  * WebRTC P2P DataChannel Engine (High-Reliability Global MQTT Signaling)
  * 
  * Uses standard native RTCPeerConnection + global enterprise MQTT over WSS (EMQX & HiveMQ)
- * for 100% reliable zero-server signaling across LTE/5G, Wi-Fi, and all mobile carriers.
+ * with robust ICE Candidate queuing and offer/answer state management.
  */
 
 // Configuration
@@ -10,14 +10,13 @@ const CHUNK_SIZE = 32 * 1024; // 32KB chunks
 const BUFFER_LOW_THRESHOLD = 128 * 1024; // 128KB buffer threshold
 const BUFFER_HIGH_THRESHOLD = 512 * 1024; // 512KB pause threshold
 
-// Multi-redundant STUN servers for NAT Traversal
+// STUN servers for NAT Traversal
 const rtcConfig = {
     iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
         { urls: 'stun:stun2.l.google.com:19302' },
-        { urls: 'stun:stun.cloudflare.com:3478' },
-        { urls: 'stun:global.stun.twilio.com:3478' }
+        { urls: 'stun:stun.cloudflare.com:3478' }
     ]
 };
 
@@ -36,9 +35,11 @@ let myClientId = 'peer-' + Math.random().toString(36).substring(2, 9);
 let remoteClientId = null;
 let remoteDeviceInfo = '상대 기기';
 let isInitiator = false;
+let isNegotiating = false;
+let isConnected = false;
 let pingInterval = null;
 let joinBroadcastInterval = null;
-let isConnected = false;
+let candidateQueue = [];
 
 // Incoming / Outgoing file tracking
 const incomingTransfers = new Map();
@@ -164,13 +165,13 @@ function connectSignaling(brokerIndex) {
     if (isConnected) return;
 
     const brokerUrl = BROKER_URLS[brokerIndex % BROKER_URLS.length];
-    updateStatus('connecting', '글로벌 P2P 중계망 접속 중...');
+    updateStatus('connecting', 'P2P 중계망 접속 중...');
 
     try {
         mqttClient = mqtt.connect(brokerUrl, {
             clientId: 'p2p_' + myClientId,
             clean: true,
-            connectTimeout: 5000,
+            connectTimeout: 6000,
             reconnectPeriod: 3000
         });
     } catch (e) {
@@ -179,7 +180,7 @@ function connectSignaling(brokerIndex) {
         return;
     }
 
-    const roomTopic = `p2pshare/v2/${currentRoomId}/#`;
+    const roomTopic = `p2pshare/v3/${currentRoomId}/#`;
 
     mqttClient.on('connect', () => {
         console.log('[Signaling] Connected to MQTT Broker:', brokerUrl);
@@ -187,12 +188,15 @@ function connectSignaling(brokerIndex) {
 
         mqttClient.subscribe(roomTopic, (err) => {
             if (!err) {
-                // Periodically announce presence until connected
+                // Announce presence
                 announcePresence();
                 if (joinBroadcastInterval) clearInterval(joinBroadcastInterval);
                 joinBroadcastInterval = setInterval(() => {
-                    if (!isConnected) announcePresence();
-                    else clearInterval(joinBroadcastInterval);
+                    if (!isConnected && !isNegotiating) {
+                        announcePresence();
+                    } else if (isConnected) {
+                        clearInterval(joinBroadcastInterval);
+                    }
                 }, 2000);
             }
         });
@@ -201,8 +205,7 @@ function connectSignaling(brokerIndex) {
     mqttClient.on('message', async (topic, payload) => {
         try {
             const msg = JSON.parse(payload.toString());
-            // Ignore messages from self
-            if (msg.sender === myClientId) return;
+            if (msg.sender === myClientId) return; // Ignore self
 
             handleSignalingMessage(msg);
         } catch (err) {
@@ -211,7 +214,7 @@ function connectSignaling(brokerIndex) {
     });
 
     mqttClient.on('error', (err) => {
-        console.warn('[Signaling] Broker error, trying fallback broker...', err);
+        console.warn('[Signaling] Broker error, trying fallback...', err);
         mqttClient.end(true);
         setTimeout(() => connectSignaling(brokerIndex + 1), 1500);
     });
@@ -225,7 +228,7 @@ function announcePresence() {
 
 function publishSignal(type, data = {}) {
     if (!mqttClient || !mqttClient.connected) return;
-    const topic = `p2pshare/v2/${currentRoomId}/${type}`;
+    const topic = `p2pshare/v3/${currentRoomId}/${type}`;
     const payload = JSON.stringify({
         type: type,
         sender: myClientId,
@@ -236,39 +239,53 @@ function publishSignal(type, data = {}) {
 }
 
 // -------------------------------------------------------------
-// WebRTC PeerConnection & Handshake
+// WebRTC PeerConnection & State Management
 // -------------------------------------------------------------
 async function handleSignalingMessage(msg) {
-    if (isConnected && msg.type === 'presence') return;
+    if (isConnected) return;
 
     switch (msg.type) {
         case 'presence':
+            if (isNegotiating) return; // Ignore repeated presence while negotiating
+
             remoteClientId = msg.sender;
             remoteDeviceInfo = msg.device || '상대 기기';
             peerStatusLabel.textContent = `1:1 (${remoteDeviceInfo})`;
 
-            // Deterministic Tie-Breaker: Smaller ClientId creates the Offer & DataChannel
+            // Deterministic Tie-Breaker: Smaller ClientId creates the Offer
             isInitiator = myClientId < remoteClientId;
 
             if (isInitiator) {
-                console.log('[WebRTC] We are the Initiator. Creating Offer...');
-                updateStatus('connecting', `${remoteDeviceInfo}와 P2P 채널 협상 중...`);
+                console.log('[WebRTC] We are Initiator. Starting Offer...');
+                isNegotiating = true;
+                if (joinBroadcastInterval) clearInterval(joinBroadcastInterval);
+
+                updateStatus('connecting', `${remoteDeviceInfo}와 P2P 연결 중...`);
                 createPeerConnection();
                 createDataChannel();
-                const offer = await peerConnection.createOffer();
-                await peerConnection.setLocalDescription(offer);
-                publishSignal('offer', { sdp: offer, target: remoteClientId });
+
+                try {
+                    const offer = await peerConnection.createOffer();
+                    await peerConnection.setLocalDescription(offer);
+                    publishSignal('offer', { sdp: offer, target: remoteClientId });
+                } catch (e) {
+                    console.error('Create offer error:', e);
+                    isNegotiating = false;
+                }
             } else {
-                console.log('[WebRTC] We are the Receiver. Waiting for Offer...');
+                console.log('[WebRTC] We are Receiver. Sending ready...');
+                if (joinBroadcastInterval) clearInterval(joinBroadcastInterval);
                 updateStatus('connecting', `${remoteDeviceInfo}와 연결 중...`);
-                createPeerConnection();
-                // Send presence back so initiator knows we are ready
                 publishSignal('ready', { target: remoteClientId });
             }
             break;
 
         case 'ready':
-            if (isInitiator && peerConnection && !peerConnection.currentRemoteDescription) {
+            if (isInitiator && !peerConnection) {
+                isNegotiating = true;
+                updateStatus('connecting', `${remoteDeviceInfo}와 P2P 연결 중...`);
+                createPeerConnection();
+                createDataChannel();
                 const offer = await peerConnection.createOffer();
                 await peerConnection.setLocalDescription(offer);
                 publishSignal('offer', { sdp: offer, target: remoteClientId });
@@ -278,31 +295,69 @@ async function handleSignalingMessage(msg) {
         case 'offer':
             if (msg.target && msg.target !== myClientId) return;
             console.log('[WebRTC] Received Offer');
+            isNegotiating = true;
+            if (joinBroadcastInterval) clearInterval(joinBroadcastInterval);
+
+            remoteClientId = msg.sender;
+            remoteDeviceInfo = msg.device || '상대 기기';
+            updateStatus('connecting', `${remoteDeviceInfo}와 연결 중...`);
+
             createPeerConnection();
-            await peerConnection.setRemoteDescription(new RTCSessionDescription(msg.sdp));
-            const answer = await peerConnection.createAnswer();
-            await peerConnection.setLocalDescription(answer);
-            publishSignal('answer', { sdp: answer, target: msg.sender });
+            try {
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+                await flushCandidateQueue();
+
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+                publishSignal('answer', { sdp: answer, target: msg.sender });
+            } catch (e) {
+                console.error('Handle offer error:', e);
+            }
             break;
 
         case 'answer':
             if (msg.target && msg.target !== myClientId) return;
             console.log('[WebRTC] Received Answer');
-            if (peerConnection) {
-                await peerConnection.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+            if (peerConnection && peerConnection.signalingState !== 'stable') {
+                try {
+                    await peerConnection.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+                    await flushCandidateQueue();
+                } catch (e) {
+                    console.error('Handle answer error:', e);
+                }
             }
             break;
 
         case 'candidate':
             if (msg.target && msg.target !== myClientId) return;
-            if (peerConnection && msg.candidate) {
-                try {
-                    await peerConnection.addIceCandidate(new RTCIceCandidate(msg.candidate));
-                } catch (e) {
-                    console.warn('[WebRTC] Candidate error:', e);
-                }
+            if (msg.candidate) {
+                handleIncomingCandidate(msg.candidate);
             }
             break;
+    }
+}
+
+async function handleIncomingCandidate(candidate) {
+    if (peerConnection && peerConnection.remoteDescription && peerConnection.remoteDescription.type) {
+        try {
+            await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+        } catch (e) {
+            console.warn('[WebRTC] Add candidate warning:', e);
+        }
+    } else {
+        // Queue candidates until remote description is set
+        candidateQueue.push(candidate);
+    }
+}
+
+async function flushCandidateQueue() {
+    while (candidateQueue.length > 0) {
+        const cand = candidateQueue.shift();
+        try {
+            await peerConnection.addIceCandidate(new RTCIceCandidate(cand));
+        } catch (e) {
+            console.warn('[WebRTC] Flush candidate warning:', e);
+        }
     }
 }
 
@@ -321,14 +376,22 @@ function createPeerConnection() {
         console.log('[WebRTC] ICE State:', peerConnection.iceConnectionState);
         if (peerConnection.iceConnectionState === 'connected' || peerConnection.iceConnectionState === 'completed') {
             isConnected = true;
+            isNegotiating = false;
         } else if (peerConnection.iceConnectionState === 'disconnected' || peerConnection.iceConnectionState === 'failed') {
             isConnected = false;
-            updateStatus('disconnected', 'P2P 연결이 끊어졌습니다.');
+            isNegotiating = false;
+            updateStatus('disconnected', 'P2P 연결 끊김 (재시도 중)');
+            setTimeout(() => {
+                if (!isConnected) {
+                    cleanupConnection();
+                    announcePresence();
+                }
+            }, 3000);
         }
     };
 
     peerConnection.ondatachannel = (event) => {
-        console.log('[WebRTC] Receiver got DataChannel');
+        console.log('[WebRTC] Receiver received DataChannel');
         setDataChannel(event.channel);
     };
 }
@@ -348,6 +411,7 @@ function setDataChannel(channel) {
     dataChannel.onopen = () => {
         console.log('[WebRTC] DataChannel OPENED!');
         isConnected = true;
+        isNegotiating = false;
         updateStatus('connected', `연결됨 (${remoteDeviceInfo})`);
         peerStatusLabel.textContent = `1:1 (${remoteDeviceInfo})`;
         showToast(`🎉 ${remoteDeviceInfo}와 1:1 P2P 연결 완료!`);
@@ -359,6 +423,7 @@ function setDataChannel(channel) {
     dataChannel.onclose = () => {
         console.log('[WebRTC] DataChannel CLOSED');
         isConnected = false;
+        isNegotiating = false;
         stopPing();
         updateStatus('waiting', '상대방 기기 연결 대기 중...');
         peerStatusLabel.textContent = '1:1 P2P';
@@ -385,6 +450,9 @@ function cleanupConnection() {
         peerConnection.close();
         peerConnection = null;
     }
+    candidateQueue = [];
+    isNegotiating = false;
+    isConnected = false;
 }
 
 function updateStatus(state, text) {
@@ -591,7 +659,6 @@ async function sendFile(file) {
     let lastBytes = 0;
 
     while (offset < file.size) {
-        // Flow Control: Pause if WebRTC buffer is high
         if (dataChannel.bufferedAmount > BUFFER_HIGH_THRESHOLD) {
             await waitForBufferDrain();
         }
