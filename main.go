@@ -31,12 +31,28 @@ func randomRoomCode(length int) string {
 	return string(result)
 }
 
+func loadEnvPassword() string {
+	data, err := os.ReadFile(".p2p.env")
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "ACCESS_PASSWORD=") {
+			return strings.TrimPrefix(line, "ACCESS_PASSWORD=")
+		}
+	}
+	return ""
+}
+
 func main() {
 	portFlag := flag.Int("port", 8080, "Port to listen on (e.g. 8080)")
 	roomFlag := flag.String("room", "", "Predefined 6-character room code (optional)")
 	hostFlag := flag.String("host", "", "Custom host/IP to advertise (e.g. 192.168.0.15)")
 	flag.Parse()
 
+	envPassword := loadEnvPassword()
 	roomCode := strings.ToUpper(strings.TrimSpace(*roomFlag))
 	if roomCode == "" {
 		roomCode = randomRoomCode(6)
@@ -140,6 +156,11 @@ func main() {
 	}
 	fmt.Println()
 	fmt.Printf("  👉 방 코드 (Room Code):     %s\n", roomCode)
+	if envPassword != "" {
+		fmt.Printf("  🔒 보안 비밀번호 (.p2p.env): %s\n", envPassword)
+	} else {
+		fmt.Println("  🔒 보안 비밀번호 (.p2p.env): (미설정 - 브라우저에서 직접 입력)")
+	}
 	fmt.Println("==========================================================================")
 	fmt.Println("  [서버 실행 중...] 종료하려면 Ctrl+C 를 누르세요.")
 	fmt.Println()

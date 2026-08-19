@@ -2,11 +2,14 @@
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <meta name="theme-color" content="#0f172a">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <title>P2P Direct Share - WebRTC DataChannel (9B Binary Header)</title>
+    <title>P2P Direct Share - 6자리 보안 키 파일 전송</title>
     <style>
         :root {
             --bg-primary: #0f172a;
@@ -145,19 +148,111 @@
             font-variant-numeric: tabular-nums;
         }
 
-        main {
+        /* Lobby Screen Styles */
+        #lobbyView {
             flex: 1;
-            max-width: 1200px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .lobby-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-lg);
+            padding: 32px 24px;
+            max-width: 440px;
+            width: 100%;
+            box-shadow: var(--shadow);
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            text-align: center;
+            animation: fadeIn 0.3s ease;
+        }
+
+        .lobby-icon {
+            font-size: 48px;
+            margin-bottom: -6px;
+        }
+
+        .lobby-title {
+            font-size: 1.4rem;
+            font-weight: 800;
+            color: var(--text-primary);
+        }
+
+        .lobby-desc {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            line-height: 1.5;
+        }
+
+        .key-input-container {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .key-input {
+            width: 100%;
+            background: var(--bg-secondary);
+            border: 2px solid var(--border-color);
+            border-radius: var(--radius-sm);
+            padding: 14px;
+            font-size: 1.8rem;
+            font-weight: 800;
+            letter-spacing: 6px;
+            text-align: center;
+            color: var(--accent);
+            text-transform: uppercase;
+        }
+
+        .password-input {
+            width: 100%;
+            background: var(--bg-secondary);
+            border: 2px solid var(--border-color);
+            border-radius: var(--radius-sm);
+            padding: 12px 42px 12px 14px;
+            font-size: 1.05rem;
+            color: var(--text-primary);
+            transition: all 0.2s ease;
+        }
+
+        .password-input:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px var(--accent-glow);
+        }
+
+        .lobby-field-label {
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-align: left;
+            margin-bottom: -4px;
+        }
+
+        .lobby-btn-row {
+            display: flex;
+            gap: 10px;
+        }
+
+        /* Main App Grid View */
+        #mainAppView {
+            flex: 1;
+            max-width: 1240px;
             width: 100%;
             margin: 0 auto;
             padding: 20px;
             display: grid;
-            grid-template-columns: 340px 1fr;
+            grid-template-columns: 360px 1fr;
             gap: 20px;
         }
 
-        @media (max-width: 860px) {
-            main {
+        @media (max-width: 890px) {
+            #mainAppView {
                 grid-template-columns: 1fr;
                 padding: 12px;
                 gap: 16px;
@@ -198,6 +293,7 @@
             border: 1px solid var(--border-color);
             border-radius: var(--radius-sm);
             padding: 12px;
+            position: relative;
         }
 
         .room-label {
@@ -209,11 +305,28 @@
         }
 
         .room-code {
-            font-size: 1.6rem;
+            font-size: 1.8rem;
             font-weight: 800;
-            letter-spacing: 3px;
+            letter-spacing: 4px;
             color: var(--accent);
             user-select: all;
+        }
+
+        .btn-leave-room {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            background: transparent;
+            border: 1px solid var(--border-color);
+            color: var(--text-muted);
+            font-size: 0.75rem;
+            padding: 4px 8px;
+            border-radius: 6px;
+        }
+
+        .btn-leave-room:hover {
+            color: var(--danger);
+            border-color: var(--danger);
         }
 
         .qr-container {
@@ -226,8 +339,132 @@
             margin: 0 auto;
             width: fit-content;
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-            min-height: 190px;
-            min-width: 190px;
+            min-height: 180px;
+            min-width: 180px;
+        }
+
+        /* Peer List Styles */
+        .peer-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            max-height: 140px;
+            overflow-y: auto;
+        }
+
+        .peer-item {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-sm);
+            padding: 8px 12px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 0.85rem;
+            transition: border-color 0.2s ease;
+        }
+
+        .peer-info {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-weight: 600;
+        }
+
+        .peer-status-tag {
+            font-size: 0.75rem;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-weight: 600;
+            background: rgba(16, 185, 129, 0.2);
+            color: #34d399;
+            border: 1px solid rgba(16, 185, 129, 0.4);
+        }
+
+        .peer-item.me {
+            border-color: rgba(56, 189, 248, 0.4);
+        }
+
+        .peer-item.me .peer-status-tag {
+            background: rgba(56, 189, 248, 0.15);
+            color: var(--accent);
+            border-color: rgba(56, 189, 248, 0.4);
+        }
+
+        .peer-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: var(--success);
+            box-shadow: 0 0 6px var(--success);
+        }
+
+        /* Completed Files Log List Styles (Left Sidebar) */
+        .file-log-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            max-height: 220px;
+            overflow-y: auto;
+        }
+
+        .file-log-empty {
+            text-align: center;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            padding: 12px 6px;
+        }
+
+        .file-log-item {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-sm);
+            padding: 9px 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            font-size: 0.82rem;
+            animation: fadeIn 0.3s ease;
+        }
+
+        .file-log-top {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .file-log-name {
+            font-weight: 600;
+            max-width: 75%;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .file-log-bottom {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
+        .file-log-download-btn {
+            color: var(--accent);
+            text-decoration: none;
+            font-weight: 700;
+            padding: 2px 6px;
+            border-radius: 4px;
+            background: rgba(56, 189, 248, 0.1);
+            border: 1px solid rgba(56, 189, 248, 0.3);
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .file-log-download-btn:hover {
+            background: var(--accent);
+            color: #0f172a;
         }
 
         .btn-group {
@@ -271,43 +508,6 @@
             background: #475569;
         }
 
-        .join-box {
-            display: flex;
-            gap: 8px;
-            margin-top: 4px;
-        }
-
-        .join-input {
-            flex: 1;
-            background: var(--bg-secondary);
-            border: 1px solid var(--border-color);
-            border-radius: var(--radius-sm);
-            padding: 8px 12px;
-            color: var(--text-primary);
-            font-size: 0.95rem;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            text-align: center;
-        }
-
-        .join-input:focus {
-            outline: none;
-            border-color: var(--accent);
-            box-shadow: 0 0 0 2px var(--accent-glow);
-        }
-
-        .device-badge {
-            background: var(--bg-secondary);
-            border: 1px solid var(--border-color);
-            border-radius: var(--radius-sm);
-            padding: 8px 12px;
-            font-size: 0.8rem;
-            color: var(--text-secondary);
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
         .content-panel {
             display: flex;
             flex-direction: column;
@@ -317,7 +517,7 @@
         .dropzone {
             border: 2px dashed var(--border-color);
             border-radius: var(--radius-md);
-            padding: 30px 16px;
+            padding: 32px 16px;
             text-align: center;
             background: rgba(30, 41, 59, 0.5);
             cursor: pointer;
@@ -367,6 +567,12 @@
             flex-direction: column;
             gap: 6px;
             animation: fadeIn 0.3s ease;
+            transition: all 0.5s ease;
+        }
+
+        .transfer-item.fade-out {
+            opacity: 0;
+            transform: translateY(-10px);
         }
 
         .transfer-header {
@@ -384,9 +590,25 @@
             text-overflow: ellipsis;
         }
 
-        .file-meta {
-            font-size: 0.75rem;
-            color: var(--text-muted);
+        .btn-cancel-transfer {
+            background: rgba(239, 68, 68, 0.12);
+            color: #f87171;
+            border: 1px solid rgba(239, 68, 68, 0.35);
+            font-size: 0.72rem;
+            font-weight: 600;
+            padding: 2px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 2px;
+            transition: all 0.2s ease;
+        }
+
+        .btn-cancel-transfer:hover {
+            background: #ef4444;
+            color: #ffffff;
+            border-color: #ef4444;
         }
 
         .progress-bar-bg {
@@ -416,13 +638,13 @@
             flex: 1;
             display: flex;
             flex-direction: column;
-            min-height: 320px;
+            min-height: 300px;
         }
 
         .chat-messages {
             flex: 1;
             min-height: 180px;
-            max-height: 300px;
+            max-height: 280px;
             overflow-y: auto;
             display: flex;
             flex-direction: column;
@@ -521,21 +743,52 @@
             <div id="pingBadge" class="ping-badge" style="display: none;">⚡ -- ms</div>
             <div id="statusBadge" class="status-badge">
                 <span class="status-dot"></span>
-                <span id="statusText">연결 준비 중...</span>
+                <span id="statusText">보안 키 입력 대기 중...</span>
             </div>
         </div>
     </header>
 
-    <main>
+    <!-- 1. Lobby View: 6-Digit Key & Password Authentication Screen -->
+    <section id="lobbyView">
+        <div class="lobby-card">
+            <div class="lobby-icon">🛡️</div>
+            <h2 class="lobby-title">보안 방 키 및 비밀번호 인증</h2>
+            <p class="lobby-desc">6자리 방 키와 허가된 비밀번호를 입력하세요.<br><strong>동일한 키와 비밀번호를 가진 사용자만 안전하게 연결</strong>됩니다.</p>
+            
+            <div class="key-input-container">
+                <div class="lobby-field-label">🔑 6자리 방 키 (Room Key)</div>
+                <input type="text" id="lobbyKeyInput" class="key-input" placeholder="ABC123" maxlength="6" autofocus autocomplete="off">
+
+                <div class="lobby-field-label" style="margin-top: 6px;">🔒 접속 비밀번호 (Password)</div>
+                <div style="position: relative; width: 100%;">
+                    <input type="password" id="lobbyPasswordInput" class="password-input" placeholder="비밀번호 입력..." autocomplete="current-password">
+                    <button type="button" id="btnTogglePassword" style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%); background: none; border: none; font-size: 1.1rem; cursor: pointer; padding: 4px; color: var(--text-muted);" title="비밀번호 보기/숨기기">👁️</button>
+                </div>
+            </div>
+
+            <div class="lobby-btn-row">
+                <button id="btnGenerateKey" class="btn-secondary" style="flex: 1;">
+                    🎲 랜덤 키 생성
+                </button>
+                <button id="btnEnterRoom" class="btn-primary" style="flex: 1.2;">
+                    🚀 인증 및 입장
+                </button>
+            </div>
+        </div>
+    </section>
+
+    <!-- 2. Main Transmission App View (Shown after entering key) -->
+    <main id="mainAppView" style="display: none;">
         <aside class="connection-panel">
             <div class="card">
                 <div class="card-title">
-                    <span>기기 연결</span>
-                    <span id="peerStatusLabel" style="font-size: 0.8rem; color: var(--text-muted);">1:1 P2P (E2EE)</span>
+                    <span>보안 통신방</span>
+                    <span id="peerStatusLabel" style="font-size: 0.8rem; color: var(--text-muted);">E2EE 보안</span>
                 </div>
 
                 <div class="room-info">
-                    <div class="room-label">Room Code</div>
+                    <button id="btnLeaveRoom" class="btn-leave-room" title="방 나가기">🔒 나가기</button>
+                    <div class="room-label">Security Room Key</div>
                     <div id="roomCodeDisplay" class="room-code">------</div>
                 </div>
 
@@ -547,15 +800,28 @@
                     <button id="btnCopyLink" class="btn-primary">
                         📋 초대 링크 복사
                     </button>
-                    <div class="join-box">
-                        <input type="text" id="joinRoomInput" class="join-input" placeholder="방 코드 6자리" maxlength="6">
-                        <button id="btnJoinRoom" class="btn-secondary">입장</button>
-                    </div>
                 </div>
+            </div>
 
-                <div class="device-badge">
-                    <span>💻</span>
-                    <span id="myDeviceInfo">내 기기 감지 중...</span>
+            <!-- Live Connected Peer List Card -->
+            <div class="card">
+                <div class="card-title">
+                    <span>👥 실시간 접속자</span>
+                    <span id="peerCountBadge" style="font-size: 0.75rem; color: var(--accent);">1명 접속 중</span>
+                </div>
+                <div id="peerListContainer" class="peer-list">
+                    <!-- Populated dynamically -->
+                </div>
+            </div>
+
+            <!-- Completed Files Log Card (Left Sidebar) -->
+            <div class="card">
+                <div class="card-title">
+                    <span>📋 파일 송수신 기록</span>
+                    <span id="completedLogCountBadge" style="font-size: 0.75rem; color: var(--text-muted);">0개</span>
+                </div>
+                <div id="completedFilesLog" class="file-log-list">
+                    <div class="file-log-empty" id="fileLogEmptyText">완료된 파일이 여기에 기록됩니다.</div>
                 </div>
             </div>
         </aside>
@@ -570,10 +836,11 @@
                 <div id="dropZone" class="dropzone">
                     <div class="dropzone-icon">📁</div>
                     <div class="dropzone-title">파일을 여기에 드래그하거나 터치하여 선택</div>
-                    <div class="dropzone-sub">기기 간 P2P 직접 전송 • 초고속 32KB 청크 스트리밍 • E2EE 암호화</div>
+                    <div class="dropzone-sub">동일한 키로 접속한 기기에 직접 P2P 전송 • E2EE 암호화</div>
                     <input type="file" id="fileInput" multiple style="display: none;">
                 </div>
 
+                <!-- Active in-progress transfers only -->
                 <div id="transferList" class="transfer-list"></div>
             </div>
 
@@ -587,7 +854,7 @@
 
                 <div id="chatMessages" class="chat-messages">
                     <div class="message-bubble incoming" style="background: rgba(51, 65, 85, 0.4); color: var(--text-muted); font-size: 0.85rem;">
-                        상대방 기기가 연결되면 메시지와 파일을 즉시 주고받을 수 있습니다.
+                        상대방이 동일한 6자리 보안 키로 입장하면 메시지와 파일을 바로 주고받을 수 있습니다.
                     </div>
                 </div>
 
@@ -599,9 +866,10 @@
         </section>
     </main>
 
-    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
-    <script src="qr.min.js"></script>
-    <script src="protocol.js"></script>
-    <script src="app.js"></script>
+    <!-- Cache-busted Scripts -->
+    <script src="https://unpkg.com/mqtt@5.3.5/dist/mqtt.min.js"></script>
+    <script src="qr.min.js?v=20260819_03"></script>
+    <script src="protocol.js?v=20260819_03"></script>
+    <script src="app.js?v=20260819_03"></script>
 </body>
 </html>

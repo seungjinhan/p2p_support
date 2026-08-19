@@ -10,7 +10,7 @@
 
 const PacketType = {
     CHAT: 0x01,        // 텍스트 채팅 메시지
-    FILE_META: 0x02,   // 파일 메타데이터 (JSON: name, size, totalChunks, checksum)
+    FILE_META: 0x02,   // 파일 메타데이터 (JSON: name, size, totalChunks, type)
     FILE_CHUNK: 0x03,  // 파일 바이너리 청크
     FILE_ACK: 0x04,    // 청크 수신 확인 (ACK)
     FILE_CANCEL: 0x05, // 파일 전송 취소
@@ -169,7 +169,11 @@ class ProtocolCodec {
     }
 }
 
-// Export for module/browser
+// Export for browser & node
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = { PacketType, ProtocolCodec };
+}
+if (typeof window !== 'undefined') {
+    window.PacketType = PacketType;
+    window.ProtocolCodec = ProtocolCodec;
 }

@@ -1,0 +1,6 @@
+# P2P Secure Environment Configuration
+.p2p.env
+.DS_Store
+*.exe
+p2pshare
+scratch/

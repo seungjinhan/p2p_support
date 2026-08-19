@@ -1,5 +1,5 @@
 /**
- * WebRTC P2P DataChannel Engine with Full-Duplex Simultaneous Transfer & Resilient Heartbeat
+ * WebRTC P2P DataChannel Engine with 6-Digit Key, SHA-256 Password Authentication & Full-Duplex Transfer
  */
 
 // Configuration: 16KB universally safe SCTP chunk size for full-duplex simultaneous transfer
@@ -37,6 +37,8 @@ let mqttClient = null;
 let peerConnection = null;
 let dataChannel = null;
 let currentRoomId = '';
+let currentSecureTopic = '';
+let currentPassword = '';
 let myClientId = 'peer-' + Math.random().toString(36).substring(2, 9);
 let isDirectP2P = false;
 let pingInterval = null;
@@ -58,6 +60,8 @@ const cancelledIncomingFileIds = new Set();
 // History Persistence Keys
 const STORAGE_KEY_CHAT = 'p2p_chat_history';
 const STORAGE_KEY_FILES = 'p2p_files_history';
+const STORAGE_KEY_AUTH_ROOM = 'p2p_auth_room';
+const STORAGE_KEY_AUTH_PW = 'p2p_auth_pw';
 
 // Detect Device Information
 function getDeviceDescription() {
@@ -83,6 +87,8 @@ const pingBadge = document.getElementById('pingBadge');
 const lobbyView = document.getElementById('lobbyView');
 const mainAppView = document.getElementById('mainAppView');
 const lobbyKeyInput = document.getElementById('lobbyKeyInput');
+const lobbyPasswordInput = document.getElementById('lobbyPasswordInput');
+const btnTogglePassword = document.getElementById('btnTogglePassword');
 const btnGenerateKey = document.getElementById('btnGenerateKey');
 const btnEnterRoom = document.getElementById('btnEnterRoom');
 const roomCodeDisplay = document.getElementById('roomCodeDisplay');
@@ -134,6 +140,14 @@ function formatBytes(bytes, decimals = 1) {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
 }
 
+// SHA-256 Cryptographic Hash Helper
+async function sha256(message) {
+    const msgBuffer = new TextEncoder().encode(message);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
 // Generate random 6-character security key
 function generateRoomCode() {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -145,37 +159,68 @@ function generateRoomCode() {
 }
 
 // -------------------------------------------------------------
-// Lobby & Initialization Flow
+// Lobby & Authentication Flow
 // -------------------------------------------------------------
-function initApp() {
+async function initApp() {
     const params = new URLSearchParams(window.location.search);
     const roomParam = params.get('room');
+    const pwParam = params.get('pw');
+
+    const savedRoom = sessionStorage.getItem(STORAGE_KEY_AUTH_ROOM);
+    const savedPw = sessionStorage.getItem(STORAGE_KEY_AUTH_PW);
 
     if (roomParam && roomParam.trim().length >= 4) {
-        const key = roomParam.trim().toUpperCase();
-        lobbyKeyInput.value = key;
-        enterRoom(key);
-    } else {
-        showLobbyView();
+        lobbyKeyInput.value = roomParam.trim().toUpperCase();
+        if (pwParam && pwParam.trim().length > 0) {
+            lobbyPasswordInput.value = pwParam.trim();
+            await enterRoom(roomParam.trim(), pwParam.trim());
+            return;
+        } else if (savedRoom === roomParam.trim().toUpperCase() && savedPw) {
+            lobbyPasswordInput.value = savedPw;
+            await enterRoom(savedRoom, savedPw);
+            return;
+        }
+    } else if (savedRoom && savedPw) {
+        lobbyKeyInput.value = savedRoom;
+        lobbyPasswordInput.value = savedPw;
     }
+
+    showLobbyView();
 }
 
 function showLobbyView() {
     lobbyView.style.display = 'flex';
     mainAppView.style.display = 'none';
-    statusText.textContent = '보안 키 입력 대기 중...';
+    statusText.textContent = '보안 키 및 비밀번호 입력 대기 중...';
     statusBadge.className = 'status-badge';
     pingBadge.style.display = 'none';
     cleanupConnection();
 }
 
-function enterRoom(key) {
+async function enterRoom(key, password) {
     if (!key || key.length < 4) {
-        showToast('⚠️ 4~6자리의 보안 키를 입력해 주세요.');
+        showToast('⚠️ 4~6자리의 방 키를 입력해 주세요.');
+        lobbyKeyInput.focus();
+        return;
+    }
+
+    if (!password || password.trim().length === 0) {
+        showToast('⚠️ 접속 비밀번호를 입력해 주세요.');
+        lobbyPasswordInput.focus();
         return;
     }
 
     currentRoomId = key.toUpperCase();
+    currentPassword = password.trim();
+
+    // Compute SHA-256 hash of password for cryptographic topic isolation
+    const pwHash = await sha256(currentPassword);
+    currentSecureTopic = `${currentRoomId}_${pwHash.substring(0, 12)}`;
+
+    // Store in session storage
+    sessionStorage.setItem(STORAGE_KEY_AUTH_ROOM, currentRoomId);
+    sessionStorage.setItem(STORAGE_KEY_AUTH_PW, currentPassword);
+
     const newUrl = `${window.location.pathname}?room=${currentRoomId}`;
     window.history.replaceState({}, '', newUrl);
 
@@ -191,6 +236,17 @@ function enterRoom(key) {
     startPeerPruner();
 }
 
+// Password show/hide toggle
+btnTogglePassword.addEventListener('click', () => {
+    if (lobbyPasswordInput.type === 'password') {
+        lobbyPasswordInput.type = 'text';
+        btnTogglePassword.textContent = '🙈';
+    } else {
+        lobbyPasswordInput.type = 'password';
+        btnTogglePassword.textContent = '👁️';
+    }
+});
+
 // Key Input formatting
 lobbyKeyInput.addEventListener('input', (e) => {
     e.target.value = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
@@ -198,25 +254,35 @@ lobbyKeyInput.addEventListener('input', (e) => {
 
 lobbyKeyInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
+        lobbyPasswordInput.focus();
+    }
+});
+
+lobbyPasswordInput.addEventListener('keydown', async (e) => {
+    if (e.key === 'Enter') {
         const key = lobbyKeyInput.value.trim().toUpperCase();
-        if (key.length >= 4) enterRoom(key);
+        const pw = lobbyPasswordInput.value.trim();
+        await enterRoom(key, pw);
     }
 });
 
 btnGenerateKey.addEventListener('click', () => {
     const code = generateRoomCode();
     lobbyKeyInput.value = code;
-    lobbyKeyInput.focus();
-    showToast(`🎲 보안 키 [${code}] 생성 완료!`);
+    lobbyPasswordInput.focus();
+    showToast(`🎲 방 키 [${code}] 생성 완료! 비밀번호를 입력해 주세요.`);
 });
 
-btnEnterRoom.addEventListener('click', () => {
+btnEnterRoom.addEventListener('click', async () => {
     const key = lobbyKeyInput.value.trim().toUpperCase();
-    enterRoom(key);
+    const pw = lobbyPasswordInput.value.trim();
+    await enterRoom(key, pw);
 });
 
 btnLeaveRoom.addEventListener('click', () => {
     if (confirm('보안 방에서 나가시겠습니까?')) {
+        sessionStorage.removeItem(STORAGE_KEY_AUTH_ROOM);
+        sessionStorage.removeItem(STORAGE_KEY_AUTH_PW);
         const newUrl = window.location.pathname;
         window.history.replaceState({}, '', newUrl);
         showLobbyView();
@@ -235,7 +301,7 @@ btnCopyLink.addEventListener('click', async () => {
     const fullURL = window.location.origin + window.location.pathname + `?room=${currentRoomId}`;
     try {
         await navigator.clipboard.writeText(fullURL);
-        showToast('📋 초대 링크가 클립보드에 복사되었습니다!');
+        showToast('📋 초대 링크가 클립보드에 복사되었습니다! (비밀번호는 별도 전달)');
     } catch (e) {
         prompt('초대 링크 복사:', fullURL);
     }
@@ -266,7 +332,6 @@ function startPeerPruner() {
         let changed = false;
 
         activePeers.forEach((peerData, clientId) => {
-            // Generous 8-second timeout so simultaneous file transfers never cause false drops
             if (now - peerData.lastSeen > 8000) {
                 showToast(`👋 ${peerData.device} 님의 연결이 종료되었습니다.`);
                 appendSystemMessage(`[시스템] ${peerData.device} 퇴장`);
@@ -340,7 +405,7 @@ function renderPeerList() {
         updateStatus('connected', `연결됨 (${firstPeer.device})`);
         peerStatusLabel.textContent = `1:1 (${firstPeer.device})`;
     } else {
-        updateStatus('waiting', `상대방 대기 중 [키: ${currentRoomId}]`);
+        updateStatus('waiting', `상대방 대기 중 [방: ${currentRoomId}]`);
         peerStatusLabel.textContent = 'E2EE 보안';
     }
 }
@@ -348,7 +413,7 @@ function renderPeerList() {
 function handleAllPeersDisconnected() {
     cleanupPeerConnection();
     stopPing();
-    updateStatus('waiting', `상대방 대기 중 [키: ${currentRoomId}]`);
+    updateStatus('waiting', `상대방 대기 중 [방: ${currentRoomId}]`);
     peerStatusLabel.textContent = 'E2EE 보안';
 
     if (activeSendingFile) {
@@ -407,11 +472,11 @@ function updateCompletedLogCount() {
 }
 
 // -------------------------------------------------------------
-// Global MQTT Signaling with Auto-Reconnection & Mutual Handshake
+// Global MQTT Signaling with Cryptographic Topic Isolation
 // -------------------------------------------------------------
 function connectSignaling(brokerIndex) {
     const brokerUrl = BROKER_URLS[brokerIndex % BROKER_URLS.length];
-    updateStatus('connecting', 'P2P 네트워크 접속 중...');
+    updateStatus('connecting', '보안 P2P 네트워크 접속 중...');
 
     try {
         mqttClient = mqtt.connect(brokerUrl, {
@@ -426,10 +491,11 @@ function connectSignaling(brokerIndex) {
         return;
     }
 
-    const roomTopic = `p2pshare/v7/${currentRoomId}/#`;
+    // Secure isolated topic based on RoomKey + SHA256(Password)
+    const roomTopic = `p2pshare/v8/${currentSecureTopic}/#`;
 
     mqttClient.on('connect', () => {
-        console.log('[Signaling] Connected to Broker:', brokerUrl);
+        console.log('[Signaling] Connected to Secure Broker Topic:', roomTopic);
         renderPeerList();
 
         mqttClient.subscribe(roomTopic, (err) => {
@@ -482,8 +548,8 @@ function announcePresence(isReply = false) {
 }
 
 function publishSignal(type, data = {}) {
-    if (!mqttClient || !mqttClient.connected) return;
-    const topic = `p2pshare/v7/${currentRoomId}/${type}`;
+    if (!mqttClient || !mqttClient.connected || !currentSecureTopic) return;
+    const topic = `p2pshare/v8/${currentSecureTopic}/${type}`;
     const payload = JSON.stringify({
         type: type,
         sender: myClientId,
@@ -507,10 +573,10 @@ function channelSend(arrayBuffer) {
     try {
         if (dataChannel && dataChannel.readyState === 'open') {
             dataChannel.send(arrayBuffer);
-        } else if (mqttClient && mqttClient.connected) {
+        } else if (mqttClient && mqttClient.connected && currentSecureTopic) {
             const targetPeerId = getPrimaryRemoteClientId();
             if (targetPeerId) {
-                const topic = `p2pshare/v7/${currentRoomId}/data/${targetPeerId}`;
+                const topic = `p2pshare/v8/${currentSecureTopic}/data/${targetPeerId}`;
                 const uint8 = new Uint8Array(arrayBuffer);
                 mqttClient.publish(topic, uint8);
             }
@@ -902,7 +968,7 @@ fileInput.addEventListener('change', (e) => {
 
 function handleFilesSelected(files) {
     if (activePeers.size === 0) {
-        showToast('⚠️ 먼저 상대방 기기를 같은 키로 연결해 주세요!');
+        showToast('⚠️ 먼저 상대방 기기를 같은 키와 비밀번호로 연결해 주세요!');
         return;
     }
 

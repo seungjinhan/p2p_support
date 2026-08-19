@@ -209,10 +209,29 @@
             text-transform: uppercase;
         }
 
-        .key-input:focus {
+        .password-input {
+            width: 100%;
+            background: var(--bg-secondary);
+            border: 2px solid var(--border-color);
+            border-radius: var(--radius-sm);
+            padding: 12px 42px 12px 14px;
+            font-size: 1.05rem;
+            color: var(--text-primary);
+            transition: all 0.2s ease;
+        }
+
+        .password-input:focus {
             outline: none;
             border-color: var(--accent);
             box-shadow: 0 0 0 3px var(--accent-glow);
+        }
+
+        .lobby-field-label {
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-align: left;
+            margin-bottom: -4px;
         }
 
         .lobby-btn-row {
@@ -729,15 +748,22 @@
         </div>
     </header>
 
-    <!-- 1. Lobby View: 6-Digit Key Input Screen -->
+    <!-- 1. Lobby View: 6-Digit Key & Password Authentication Screen -->
     <section id="lobbyView">
         <div class="lobby-card">
-            <div class="lobby-icon">🔒</div>
-            <h2 class="lobby-title">6자리 보안 키로 안전한 전송</h2>
-            <p class="lobby-desc">임의의 6자리 키를 입력하거나 자동 생성하여 방을 개설하세요.<br><strong>동일한 키를 가진 사람끼리만 1:1로 안전하게 연결</strong>됩니다.</p>
+            <div class="lobby-icon">🛡️</div>
+            <h2 class="lobby-title">보안 방 키 및 비밀번호 인증</h2>
+            <p class="lobby-desc">6자리 방 키와 허가된 비밀번호를 입력하세요.<br><strong>동일한 키와 비밀번호를 가진 사용자만 안전하게 연결</strong>됩니다.</p>
             
             <div class="key-input-container">
+                <div class="lobby-field-label">🔑 6자리 방 키 (Room Key)</div>
                 <input type="text" id="lobbyKeyInput" class="key-input" placeholder="ABC123" maxlength="6" autofocus autocomplete="off">
+
+                <div class="lobby-field-label" style="margin-top: 6px;">🔒 접속 비밀번호 (Password)</div>
+                <div style="position: relative; width: 100%;">
+                    <input type="password" id="lobbyPasswordInput" class="password-input" placeholder="비밀번호 입력..." autocomplete="current-password">
+                    <button type="button" id="btnTogglePassword" style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%); background: none; border: none; font-size: 1.1rem; cursor: pointer; padding: 4px; color: var(--text-muted);" title="비밀번호 보기/숨기기">👁️</button>
+                </div>
             </div>
 
             <div class="lobby-btn-row">
@@ -745,7 +771,7 @@
                     🎲 랜덤 키 생성
                 </button>
                 <button id="btnEnterRoom" class="btn-primary" style="flex: 1.2;">
-                    🚀 입장하기
+                    🚀 인증 및 입장
                 </button>
             </div>
         </div>
