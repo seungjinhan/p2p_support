@@ -159,9 +159,35 @@ function generateRoomCode() {
 }
 
 // -------------------------------------------------------------
+// Environment Configuration Loader (.p2p.env on GitHub Pages & Local)
+// -------------------------------------------------------------
+let envMasterPassword = '';
+
+async function loadEnvConfig() {
+    try {
+        const res = await fetch('.p2p.env?_t=' + Date.now());
+        if (res.ok) {
+            const text = await res.text();
+            const lines = text.split('\n');
+            for (const line of lines) {
+                const trimmed = line.trim();
+                if (trimmed.startsWith('ACCESS_PASSWORD=')) {
+                    envMasterPassword = trimmed.substring('ACCESS_PASSWORD='.length).trim();
+                }
+            }
+            console.log('[Security] .p2p.env loaded from server/GitHub Pages');
+        }
+    } catch (e) {
+        console.warn('[Security] .p2p.env fetch skipped:', e);
+    }
+}
+
+// -------------------------------------------------------------
 // Lobby & Authentication Flow
 // -------------------------------------------------------------
 async function initApp() {
+    await loadEnvConfig();
+
     const params = new URLSearchParams(window.location.search);
     const roomParam = params.get('room');
     const pwParam = params.get('pw');
@@ -208,6 +234,16 @@ async function enterRoom(key, password) {
         showToast('⚠️ 접속 비밀번호를 입력해 주세요.');
         lobbyPasswordInput.focus();
         return;
+    }
+
+    // Verify against .p2p.env if configured
+    if (envMasterPassword && envMasterPassword.length > 0) {
+        if (password.trim() !== envMasterPassword) {
+            showToast('❌ 비밀번호가 올바르지 않습니다. 접근이 거부되었습니다.');
+            lobbyPasswordInput.focus();
+            lobbyPasswordInput.select();
+            return;
+        }
     }
 
     currentRoomId = key.toUpperCase();
