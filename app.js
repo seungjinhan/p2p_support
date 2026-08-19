@@ -57,6 +57,10 @@ const cachedOutgoingFiles = new Map();
 const cancelledOutgoingFileIds = new Set();
 const cancelledIncomingFileIds = new Set();
 
+// Build Version & Deployment Timestamp Tracking
+const APP_BUILD_TIME = '2026-08-19 16:57:00';
+const STORAGE_KEY_BUILD_TIME = 'p2p_build_timestamp';
+
 // History Persistence Keys
 const STORAGE_KEY_CHAT = 'p2p_chat_history';
 const STORAGE_KEY_FILES = 'p2p_files_history';
@@ -84,6 +88,7 @@ const myDeviceDesc = getDeviceDescription();
 const statusBadge = document.getElementById('statusBadge');
 const statusText = document.getElementById('statusText');
 const pingBadge = document.getElementById('pingBadge');
+const buildTimeBadge = document.getElementById('buildTimeBadge');
 const lobbyView = document.getElementById('lobbyView');
 const mainAppView = document.getElementById('mainAppView');
 const lobbyKeyInput = document.getElementById('lobbyKeyInput');
@@ -187,14 +192,45 @@ async function loadEnvConfig() {
 }
 
 // -------------------------------------------------------------
+// Deployment Version & Session Invalidation System
+// -------------------------------------------------------------
+function checkBuildVersion() {
+    const lastBuild = localStorage.getItem(STORAGE_KEY_BUILD_TIME) || sessionStorage.getItem(STORAGE_KEY_BUILD_TIME);
+    if (lastBuild && lastBuild !== APP_BUILD_TIME) {
+        console.log(`[Version] New build detected (${APP_BUILD_TIME} vs ${lastBuild}). Wiping previous session!`);
+        sessionStorage.clear();
+        localStorage.setItem(STORAGE_KEY_BUILD_TIME, APP_BUILD_TIME);
+        sessionStorage.setItem(STORAGE_KEY_BUILD_TIME, APP_BUILD_TIME);
+        return true; // Was reset
+    }
+    localStorage.setItem(STORAGE_KEY_BUILD_TIME, APP_BUILD_TIME);
+    sessionStorage.setItem(STORAGE_KEY_BUILD_TIME, APP_BUILD_TIME);
+    return false;
+}
+
+// -------------------------------------------------------------
 // Lobby & Authentication Flow
 // -------------------------------------------------------------
 async function initApp() {
+    const isNewDeployment = checkBuildVersion();
+
+    if (buildTimeBadge) {
+        buildTimeBadge.textContent = `🚀 배포 일시: ${APP_BUILD_TIME}`;
+    }
+
     await loadEnvConfig();
 
     const params = new URLSearchParams(window.location.search);
     const roomParam = params.get('room');
     const pwParam = params.get('pw');
+
+    if (isNewDeployment) {
+        // Clear query parameters from URL to ensure clean start from the very first page
+        window.history.replaceState({}, '', window.location.pathname);
+        showLobbyView();
+        showToast(`🚀 새 버전이 배포되어 세션이 초기화되었습니다! (${APP_BUILD_TIME})`);
+        return;
+    }
 
     const savedRoom = sessionStorage.getItem(STORAGE_KEY_AUTH_ROOM);
     const savedPw = sessionStorage.getItem(STORAGE_KEY_AUTH_PW);

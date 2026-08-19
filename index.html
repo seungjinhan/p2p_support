@@ -822,6 +822,34 @@
             from { opacity: 0; transform: translate(-50%, 6px); }
             to { opacity: 1; transform: translate(-50%, 0); }
         }
+
+        /* App Footer & Build Info */
+        .app-footer {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            padding: 18px 20px;
+            font-size: 0.78rem;
+            color: var(--text-muted);
+            border-top: 1px solid rgba(51, 65, 85, 0.4);
+            margin-top: auto;
+            text-align: center;
+            background: rgba(15, 23, 42, 0.6);
+            backdrop-filter: blur(8px);
+        }
+
+        .build-time-badge {
+            background: rgba(56, 189, 248, 0.1);
+            color: var(--accent);
+            border: 1px solid rgba(56, 189, 248, 0.25);
+            padding: 3px 10px;
+            border-radius: 12px;
+            font-size: 0.73rem;
+            font-weight: 600;
+            letter-spacing: 0.3px;
+        }
     </style>
 </head>
 <body>
@@ -970,10 +998,16 @@
         </section>
     </main>
 
+    <!-- Global App Footer with Deployment Build Time -->
+    <footer class="app-footer">
+        <span>⚡ P2P Direct Share • E2EE 무제한 직접 전송</span>
+        <span class="build-time-badge" id="buildTimeBadge">🚀 배포 일시: 2026-08-19 16:57:00</span>
+    </footer>
+
     <!-- Cache-busted Scripts -->
     <script src="https://unpkg.com/mqtt@5.3.5/dist/mqtt.min.js"></script>
-    <script src="qr.min.js?v=20260819_03"></script>
-    <script src="protocol.js?v=20260819_03"></script>
-    <script src="app.js?v=20260819_03"></script>
+    <script src="qr.min.js?v=20260819_165700"></script>
+    <script src="protocol.js?v=20260819_165700"></script>
+    <script src="app.js?v=20260819_165700"></script>
 </body>
 </html>
