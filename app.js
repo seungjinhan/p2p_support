@@ -1,11 +1,11 @@
 /**
- * WebRTC P2P DataChannel Engine with 6-Digit Key Lobby, Live Peer List, Completed File Log & Transfer Cancel
+ * WebRTC P2P DataChannel Engine with Full-Duplex Simultaneous Transfer & Resilient Heartbeat
  */
 
-// Configuration
-const CHUNK_SIZE = 32 * 1024; // 32KB chunks
-const BUFFER_LOW_THRESHOLD = 128 * 1024;
-const BUFFER_HIGH_THRESHOLD = 512 * 1024;
+// Configuration: 16KB universally safe SCTP chunk size for full-duplex simultaneous transfer
+const CHUNK_SIZE = 16 * 1024; // 16KB
+const BUFFER_LOW_THRESHOLD = 64 * 1024; // 64KB
+const BUFFER_HIGH_THRESHOLD = 256 * 1024; // 256KB
 
 // Multi-tier STUN + OpenRelay TURN servers for NAT traversal
 const rtcConfig = {
@@ -242,7 +242,7 @@ btnCopyLink.addEventListener('click', async () => {
 });
 
 // -------------------------------------------------------------
-// Live Connected Peer List Management (Anti-Flicker)
+// Live Connected Peer List Management (Anti-Flicker & Resilient)
 // -------------------------------------------------------------
 function updatePeerPresence(clientId, deviceDesc) {
     const isNew = !activePeers.has(clientId);
@@ -266,7 +266,8 @@ function startPeerPruner() {
         let changed = false;
 
         activePeers.forEach((peerData, clientId) => {
-            if (now - peerData.lastSeen > 3500) {
+            // Generous 8-second timeout so simultaneous file transfers never cause false drops
+            if (now - peerData.lastSeen > 8000) {
                 showToast(`👋 ${peerData.device} 님의 연결이 종료되었습니다.`);
                 appendSystemMessage(`[시스템] ${peerData.device} 퇴장`);
                 activePeers.delete(clientId);
@@ -281,7 +282,7 @@ function startPeerPruner() {
         if (changed) {
             renderPeerList();
         }
-    }, 1000);
+    }, 1500);
 }
 
 let lastRenderedPeerKeys = '';
@@ -470,7 +471,7 @@ function startPresenceBroadcast() {
     if (joinBroadcastInterval) clearInterval(joinBroadcastInterval);
     joinBroadcastInterval = setInterval(() => {
         announcePresence(false);
-    }, 1200);
+    }, 1500);
 }
 
 function announcePresence(isReply = false) {
@@ -500,18 +501,22 @@ function getPrimaryRemoteClientId() {
 }
 
 // -------------------------------------------------------------
-// Unified Channel Send
+// Unified Channel Send with Safe Error Catching
 // -------------------------------------------------------------
 function channelSend(arrayBuffer) {
-    if (dataChannel && dataChannel.readyState === 'open') {
-        dataChannel.send(arrayBuffer);
-    } else if (mqttClient && mqttClient.connected) {
-        const targetPeerId = getPrimaryRemoteClientId();
-        if (targetPeerId) {
-            const topic = `p2pshare/v7/${currentRoomId}/data/${targetPeerId}`;
-            const uint8 = new Uint8Array(arrayBuffer);
-            mqttClient.publish(topic, uint8);
+    try {
+        if (dataChannel && dataChannel.readyState === 'open') {
+            dataChannel.send(arrayBuffer);
+        } else if (mqttClient && mqttClient.connected) {
+            const targetPeerId = getPrimaryRemoteClientId();
+            if (targetPeerId) {
+                const topic = `p2pshare/v7/${currentRoomId}/data/${targetPeerId}`;
+                const uint8 = new Uint8Array(arrayBuffer);
+                mqttClient.publish(topic, uint8);
+            }
         }
+    } catch (err) {
+        console.warn('[P2P] channelSend transient buffer warning:', err);
     }
 }
 
@@ -688,6 +693,10 @@ function setDataChannel(channel) {
         renderPeerList();
     };
 
+    dataChannel.onerror = (err) => {
+        console.warn('[WebRTC] DataChannel error:', err);
+    };
+
     dataChannel.onmessage = (event) => {
         handleIncomingPacket(event.data);
     };
@@ -732,6 +741,11 @@ function stopPing() {
 // -------------------------------------------------------------
 function handleIncomingPacket(arrayBuffer) {
     try {
+        // Any incoming packet (chunk, meta, chat, ping) proves peer is active!
+        activePeers.forEach((p) => {
+            p.lastSeen = Date.now();
+        });
+
         const packet = ProtocolCodec.decode(arrayBuffer);
 
         switch (packet.type) {
@@ -864,7 +878,7 @@ btnSendClipboard.addEventListener('click', async () => {
 });
 
 // -------------------------------------------------------------
-// File Transfer with Streaming & Real-time Cancel Support
+// File Transfer with Full-Duplex Flow Control & Real-time Cancel Support
 // -------------------------------------------------------------
 dropZone.addEventListener('click', () => fileInput.click());
 dropZone.addEventListener('dragover', (e) => {
@@ -938,6 +952,7 @@ async function sendFile(file) {
             return;
         }
 
+        // 3. Flow control buffer check
         if (dataChannel && dataChannel.readyState === 'open' && dataChannel.bufferedAmount > BUFFER_HIGH_THRESHOLD) {
             await waitForBufferDrain();
         }
@@ -962,7 +977,8 @@ async function sendFile(file) {
             lastBytes = offset;
         }
 
-        if (chunkIndex % 3 === 0) {
+        // Adaptive yield to event loop so simultaneous bidirectional streams never choke
+        if (chunkIndex % 2 === 0) {
             await new Promise(r => setTimeout(r, 4));
         }
     }
@@ -1063,7 +1079,21 @@ window.retryFileTransfer = function(fileId) {
 
 function waitForBufferDrain() {
     return new Promise((resolve) => {
+        if (!dataChannel || dataChannel.readyState !== 'open' || dataChannel.bufferedAmount <= BUFFER_LOW_THRESHOLD) {
+            resolve();
+            return;
+        }
+        let timer = null;
+        const check = () => {
+            if (!dataChannel || dataChannel.readyState !== 'open' || dataChannel.bufferedAmount <= BUFFER_LOW_THRESHOLD) {
+                if (timer) clearInterval(timer);
+                if (dataChannel) dataChannel.onbufferedamountlow = null;
+                resolve();
+            }
+        };
+        timer = setInterval(check, 20);
         dataChannel.onbufferedamountlow = () => {
+            if (timer) clearInterval(timer);
             dataChannel.onbufferedamountlow = null;
             resolve();
         };
