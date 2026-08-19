@@ -308,11 +308,27 @@ lobbyPasswordInput.addEventListener('keydown', async (e) => {
     }
 });
 
-btnGenerateKey.addEventListener('click', () => {
+btnGenerateKey.addEventListener('click', async () => {
+    const pw = lobbyPasswordInput.value.trim();
+    if (!pw) {
+        showToast('⚠️ 방 개설을 위해 먼저 접속 비밀번호를 입력해 주세요!');
+        lobbyPasswordInput.focus();
+        return;
+    }
+
+    if (envMasterPassword && envMasterPassword.length > 0) {
+        if (pw !== envMasterPassword) {
+            showToast('❌ 비밀번호가 올바르지 않습니다. 허가된 사용자만 방을 개설할 수 있습니다.');
+            lobbyPasswordInput.focus();
+            lobbyPasswordInput.select();
+            return;
+        }
+    }
+
     const code = generateRoomCode();
     lobbyKeyInput.value = code;
-    lobbyPasswordInput.focus();
-    showToast(`🎲 방 키 [${code}] 생성 완료! 비밀번호를 입력해 주세요.`);
+    showToast(`🎉 새 보안 방 [${code}] 개설 완료!`);
+    await enterRoom(code, pw);
 });
 
 btnEnterRoom.addEventListener('click', async () => {
