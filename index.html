@@ -571,9 +571,25 @@
             text-overflow: ellipsis;
         }
 
-        .file-meta {
-            font-size: 0.75rem;
-            color: var(--text-muted);
+        .btn-cancel-transfer {
+            background: rgba(239, 68, 68, 0.12);
+            color: #f87171;
+            border: 1px solid rgba(239, 68, 68, 0.35);
+            font-size: 0.72rem;
+            font-weight: 600;
+            padding: 2px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 2px;
+            transition: all 0.2s ease;
+        }
+
+        .btn-cancel-transfer:hover {
+            background: #ef4444;
+            color: #ffffff;
+            border-color: #ef4444;
         }
 
         .progress-bar-bg {

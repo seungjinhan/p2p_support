@@ -1,5 +1,5 @@
 /**
- * WebRTC P2P DataChannel Engine with 6-Digit Key Lobby, Live Peer List & Completed File Log
+ * WebRTC P2P DataChannel Engine with 6-Digit Key Lobby, Live Peer List, Completed File Log & Transfer Cancel
  */
 
 // Configuration
@@ -47,11 +47,13 @@ let candidateQueue = [];
 // Live Connected Peers Map: clientId -> { device, lastSeen, isDirectP2P }
 const activePeers = new Map();
 
-// Active file transfer tracking
+// Active file transfer tracking & cancellation
 let activeSendingFile = null;
 const incomingTransfers = new Map();
 const pendingEarlyChunks = new Map();
 const cachedOutgoingFiles = new Map();
+const cancelledOutgoingFileIds = new Set();
+const cancelledIncomingFileIds = new Set();
 
 // History Persistence Keys
 const STORAGE_KEY_CHAT = 'p2p_chat_history';
@@ -240,7 +242,7 @@ btnCopyLink.addEventListener('click', async () => {
 });
 
 // -------------------------------------------------------------
-// Live Connected Peer List Management
+// Live Connected Peer List Management (Anti-Flicker)
 // -------------------------------------------------------------
 function updatePeerPresence(clientId, deviceDesc) {
     const isNew = !activePeers.has(clientId);
@@ -287,14 +289,14 @@ let lastRenderedPeerKeys = '';
 function renderPeerList() {
     if (!peerListContainer) return;
 
-    // Check if peer list or direct P2P status has changed before re-rendering DOM
+    // Smart DOM diffing to eliminate flickering
     const currentKeys = Array.from(activePeers.entries())
         .map(([id, p]) => `${id}:${p.device}`)
         .sort()
         .join('|') + `_direct:${isDirectP2P}`;
 
     if (currentKeys === lastRenderedPeerKeys) {
-        return; // No change in connected peers: skip DOM wipe to completely eliminate flickering!
+        return; // No change: skip DOM wipe to eliminate flicker!
     }
     lastRenderedPeerKeys = currentKeys;
 
@@ -557,14 +559,12 @@ async function handleSignalingMessage(msg) {
         case 'presence':
             updatePeerPresence(msg.sender, msg.device);
 
-            // Mutual handshake reply
             if (!msg.isReply) {
                 announcePresence(true);
             }
 
             startPing();
 
-            // Initiate WebRTC upgrade if smaller ClientId
             if (myClientId < msg.sender && !peerConnection) {
                 createPeerConnection(msg.sender);
                 createDataChannel();
@@ -728,7 +728,7 @@ function stopPing() {
 }
 
 // -------------------------------------------------------------
-// 9-Byte Binary Packet Processing
+// 9-Byte Binary Packet Processing & File Cancel Handling
 // -------------------------------------------------------------
 function handleIncomingPacket(arrayBuffer) {
     try {
@@ -758,7 +758,30 @@ function handleIncomingPacket(arrayBuffer) {
             }
 
             case PacketType.FILE_CANCEL: {
-                showToast('❌ 파일 전송이 취소되었습니다.');
+                const fileId = packet.fileId;
+                cancelledOutgoingFileIds.add(fileId);
+                cancelledIncomingFileIds.add(fileId);
+                activeSendingFile = null;
+                incomingTransfers.delete(fileId);
+                pendingEarlyChunks.delete(fileId);
+
+                const item = document.getElementById(`transfer-${fileId}`);
+                if (item) {
+                    const status = item.querySelector('.transfer-footer span:first-child');
+                    const speed = item.querySelector('.transfer-footer span:last-child');
+                    const bar = item.querySelector('.progress-bar-fill');
+                    const cancelBtn = item.querySelector('.btn-cancel-transfer');
+                    if (cancelBtn) cancelBtn.remove();
+                    if (bar) bar.style.background = 'var(--danger)';
+                    if (speed) speed.textContent = '취소됨';
+                    if (status) status.innerHTML = `<span style="color: #f87171; font-weight:600;">❌ 상대방이 파일 송수신을 취소했습니다.</span>`;
+                    setTimeout(() => {
+                        item.classList.add('fade-out');
+                        setTimeout(() => item.remove(), 400);
+                    }, 1500);
+                }
+
+                showToast('❌ 상대방이 파일 송수신을 취소했습니다.');
                 break;
             }
 
@@ -841,7 +864,7 @@ btnSendClipboard.addEventListener('click', async () => {
 });
 
 // -------------------------------------------------------------
-// File Transfer (Streaming + Flow Control + 1-Click Retry)
+// File Transfer with Streaming & Real-time Cancel Support
 // -------------------------------------------------------------
 dropZone.addEventListener('click', () => fileInput.click());
 dropZone.addEventListener('dragover', (e) => {
@@ -900,6 +923,15 @@ async function sendFile(file) {
     let lastBytes = 0;
 
     while (offset < file.size) {
+        // 1. Check if cancelled by user or peer
+        if (cancelledOutgoingFileIds.has(fileId)) {
+            console.log('[P2P] sendFile cancelled, exiting loop for fileId:', fileId);
+            cancelledOutgoingFileIds.delete(fileId);
+            activeSendingFile = null;
+            return;
+        }
+
+        // 2. Check if peer disconnected
         if (activePeers.size === 0) {
             console.warn('[P2P] SendFile aborted due to disconnection');
             notifyInterruptedTransfer();
@@ -925,7 +957,7 @@ async function sendFile(file) {
         if (timeDiff > 0.1 || offset === file.size) {
             const bytesDiff = offset - lastBytes;
             const speed = timeDiff > 0 ? (bytesDiff / timeDiff) : 0;
-            updateTransferUI(transferItem, percent, offset, file.size, speed, false, 'outgoing');
+            updateTransferUI(transferItem, fileId, percent, offset, file.size, speed, false, 'outgoing');
             lastTime = now;
             lastBytes = offset;
         }
@@ -936,13 +968,13 @@ async function sendFile(file) {
     }
 
     activeSendingFile = null;
-    updateTransferUI(transferItem, 100, file.size, file.size, 0, true, 'outgoing');
+    updateTransferUI(transferItem, fileId, 100, file.size, file.size, 0, true, 'outgoing');
 
-    // 1. Add to Left Completed Files Log
+    // Add to Left Completed Files Log
     addFileToCompletedLog(file.name, file.size, 'outgoing', null);
     showToast(`✅ ${file.name} 전송 완료!`);
 
-    // 2. Remove from active transfer screen after 1.2 seconds
+    // Remove from active transfer screen after 1.2 seconds
     setTimeout(() => {
         if (transferItem) {
             transferItem.classList.add('fade-out');
@@ -950,6 +982,52 @@ async function sendFile(file) {
         }
     }, 1200);
 }
+
+// Global Cancel Handler for Sender and Receiver
+window.cancelTransfer = function(fileId, direction) {
+    const item = document.getElementById(`transfer-${fileId}`);
+    const cancelBtn = document.getElementById(`btn-cancel-${fileId}`);
+    if (cancelBtn) cancelBtn.remove();
+
+    if (direction === 'outgoing') {
+        cancelledOutgoingFileIds.add(fileId);
+        activeSendingFile = null;
+        channelSend(ProtocolCodec.encodeFileCancel(fileId));
+
+        if (item) {
+            const status = item.querySelector('.transfer-footer span:first-child');
+            const speed = item.querySelector('.transfer-footer span:last-child');
+            const bar = item.querySelector('.progress-bar-fill');
+            if (bar) bar.style.background = 'var(--danger)';
+            if (speed) speed.textContent = '취소됨';
+            if (status) status.innerHTML = `<span style="color: #f87171; font-weight:600;">❌ 사용자가 전송을 취소했습니다.</span>`;
+            setTimeout(() => {
+                item.classList.add('fade-out');
+                setTimeout(() => item.remove(), 400);
+            }, 1500);
+        }
+        showToast('❌ 파일 전송을 취소했습니다.');
+    } else {
+        cancelledIncomingFileIds.add(fileId);
+        incomingTransfers.delete(fileId);
+        pendingEarlyChunks.delete(fileId);
+        channelSend(ProtocolCodec.encodeFileCancel(fileId));
+
+        if (item) {
+            const status = item.querySelector('.transfer-footer span:first-child');
+            const speed = item.querySelector('.transfer-footer span:last-child');
+            const bar = item.querySelector('.progress-bar-fill');
+            if (bar) bar.style.background = 'var(--danger)';
+            if (speed) speed.textContent = '취소됨';
+            if (status) status.innerHTML = `<span style="color: #f87171; font-weight:600;">❌ 사용자가 수신을 취소했습니다.</span>`;
+            setTimeout(() => {
+                item.classList.add('fade-out');
+                setTimeout(() => item.remove(), 400);
+            }, 1500);
+        }
+        showToast('❌ 파일 수신을 취소했습니다.');
+    }
+};
 
 function notifyInterruptedTransfer() {
     if (!activeSendingFile) return;
@@ -960,6 +1038,8 @@ function notifyInterruptedTransfer() {
         const status = item.querySelector('.transfer-footer span:first-child');
         const speed = item.querySelector('.transfer-footer span:last-child');
         const bar = item.querySelector('.progress-bar-fill');
+        const cancelBtn = item.querySelector('.btn-cancel-transfer');
+        if (cancelBtn) cancelBtn.remove();
 
         if (bar) bar.style.background = 'var(--warning)';
         if (speed) speed.textContent = '중단됨';
@@ -991,9 +1071,11 @@ function waitForBufferDrain() {
 }
 
 // -------------------------------------------------------------
-// Incoming File Handling
+// Incoming File Handling with Cancel Filter
 // -------------------------------------------------------------
 function onReceiveFileMeta(fileId, meta) {
+    if (cancelledIncomingFileIds.has(fileId)) return;
+
     const item = {
         name: meta.name,
         size: meta.size,
@@ -1021,7 +1103,7 @@ function onReceiveFileMeta(fileId, meta) {
         pendingEarlyChunks.delete(fileId);
 
         const percent = Math.min(100, Math.floor((item.receivedBytes / item.size) * 100));
-        updateTransferUI(item.ui, percent, item.receivedBytes, item.size, 0, false, 'incoming');
+        updateTransferUI(item.ui, fileId, percent, item.receivedBytes, item.size, 0, false, 'incoming');
 
         if (item.chunksReceived >= item.totalChunks) {
             finalizeIncomingFile(fileId, item);
@@ -1034,6 +1116,8 @@ function onReceiveFileMeta(fileId, meta) {
 }
 
 function onReceiveFileChunk(fileId, chunkIndex, chunkData) {
+    if (cancelledIncomingFileIds.has(fileId)) return;
+
     let item = incomingTransfers.get(fileId);
 
     if (!item) {
@@ -1057,7 +1141,7 @@ function onReceiveFileChunk(fileId, chunkIndex, chunkData) {
     if (timeDiff > 0.1 || item.chunksReceived === item.totalChunks) {
         const bytesDiff = item.receivedBytes - item.lastBytes;
         const speed = timeDiff > 0 ? (bytesDiff / timeDiff) : 0;
-        updateTransferUI(item.ui, percent, item.receivedBytes, item.size, speed, false, 'incoming');
+        updateTransferUI(item.ui, fileId, percent, item.receivedBytes, item.size, speed, false, 'incoming');
         item.lastTime = now;
         item.lastBytes = item.receivedBytes;
     }
@@ -1071,7 +1155,7 @@ function finalizeIncomingFile(fileId, item) {
     const blob = new Blob(item.chunks, { type: item.type || 'application/octet-stream' });
     const downloadUrl = URL.createObjectURL(blob);
 
-    updateTransferUI(item.ui, 100, item.size, item.size, 0, true, 'incoming');
+    updateTransferUI(item.ui, fileId, 100, item.size, item.size, 0, true, 'incoming');
 
     // 1. Add to Left Completed Files Log
     addFileToCompletedLog(item.name, item.size, 'incoming', downloadUrl);
@@ -1101,7 +1185,7 @@ function finalizeIncomingFile(fileId, item) {
 }
 
 // -------------------------------------------------------------
-// Active Transfer UI Helper
+// Active Transfer UI Helper with Cancel Button
 // -------------------------------------------------------------
 function createTransferUI(fileId, name, size, direction) {
     const div = document.createElement('div');
@@ -1110,11 +1194,15 @@ function createTransferUI(fileId, name, size, direction) {
 
     const icon = direction === 'outgoing' ? '📤' : '📥';
     const directionText = direction === 'outgoing' ? '보내는 중' : '받는 중';
+    const cancelBtnText = direction === 'outgoing' ? '❌ 전송 취소' : '❌ 받기 취소';
 
     div.innerHTML = `
         <div class="transfer-header">
             <span class="file-name">${icon} ${name}</span>
-            <span class="file-meta">${formatBytes(size)}</span>
+            <div style="display: flex; align-items: center; gap: 8px;">
+                <span class="file-meta">${formatBytes(size)}</span>
+                <button class="btn-cancel-transfer" id="btn-cancel-${fileId}" onclick="window.cancelTransfer(${fileId}, '${direction}')">${cancelBtnText}</button>
+            </div>
         </div>
         <div class="progress-bar-bg">
             <div class="progress-bar-fill" id="pbar-${fileId}"></div>
@@ -1129,7 +1217,7 @@ function createTransferUI(fileId, name, size, direction) {
     return div;
 }
 
-function updateTransferUI(container, percent, bytesTransferred, totalBytes, speedBytesPerSec, isComplete = false, direction = 'outgoing') {
+function updateTransferUI(container, fileId, percent, bytesTransferred, totalBytes, speedBytesPerSec, isComplete = false, direction = 'outgoing') {
     if (!container) return;
     const bar = container.querySelector('.progress-bar-fill');
     const status = container.querySelector('.transfer-footer span:first-child');
@@ -1142,6 +1230,9 @@ function updateTransferUI(container, percent, bytesTransferred, totalBytes, spee
     const directionLabel = direction === 'outgoing' ? '보내는 중' : '받는 중';
 
     if (isComplete) {
+        const cancelBtn = document.getElementById(`btn-cancel-${fileId}`);
+        if (cancelBtn) cancelBtn.remove();
+
         if (bar) bar.style.background = 'var(--success)';
         if (status) status.textContent = direction === 'outgoing' ? `✅ 전송 완료 (${formatBytes(totalBytes)})` : `✅ 수신 완료 (${formatBytes(totalBytes)})`;
         if (speed) speed.textContent = '100%';
