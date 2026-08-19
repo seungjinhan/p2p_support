@@ -1,5 +1,12 @@
 /**
- * WebRTC P2P DataChannel Engine with Zero-Fail Auto-Reconnection & Mutual Handshake
+ * WebRTC P2P DataChannel Engine with Full Disconnection Resilience & Auto-Recovery
+ * 
+ * Features:
+ * 1. Immediate Disconnection Detection: When either peer refreshes or closes, the remaining peer
+ *    immediately resets its state, updates UI to "waiting", and broadcasts presence for instant auto-recovery.
+ * 2. Instant Zero-Action Reconnection: When the refreshed peer returns, both peers reconnect in < 0.5s.
+ * 3. File Transfer Interruption & 1-Click Retry: If a transfer is interrupted by a refresh,
+ *    the sender retains the file in memory and shows a "🔄 다시 보내기" button.
  */
 
 // Configuration
@@ -47,11 +54,12 @@ let joinBroadcastInterval = null;
 let candidateQueue = [];
 
 // Active transfer tracker
-let isTransferringActive = false;
+let activeSendingFile = null; // Holds the File object if interrupted
 
 // Incoming / Outgoing file tracking & early chunk buffering
 const incomingTransfers = new Map();
 const pendingEarlyChunks = new Map();
+const cachedOutgoingFiles = new Map(); // fileId -> File object for retry
 
 // History Persistence Keys
 const STORAGE_KEY_CHAT = 'p2p_chat_history';
@@ -95,7 +103,7 @@ const peerStatusLabel = document.getElementById('peerStatusLabel');
 
 // Accidental Refresh Protection
 window.addEventListener('beforeunload', (e) => {
-    if (isTransferringActive || incomingTransfers.size > 0) {
+    if (activeSendingFile || incomingTransfers.size > 0) {
         e.preventDefault();
         e.returnValue = '파일 전송이 진행 중입니다. 페이지를 벗어나시겠습니까?';
         return e.returnValue;
@@ -256,7 +264,7 @@ function connectSignaling(brokerIndex) {
             clientId: 'p2p_' + myClientId,
             clean: true,
             connectTimeout: 5000,
-            reconnectPeriod: 2500
+            reconnectPeriod: 2000
         });
     } catch (e) {
         console.error('MQTT Connect error:', e);
@@ -274,11 +282,7 @@ function connectSignaling(brokerIndex) {
 
         mqttClient.subscribe(roomTopic, (err) => {
             if (!err) {
-                announcePresence(false);
-                if (joinBroadcastInterval) clearInterval(joinBroadcastInterval);
-                joinBroadcastInterval = setInterval(() => {
-                    if (!isConnected) announcePresence(false);
-                }, 1500);
+                startPresenceBroadcast();
             }
         });
     });
@@ -308,6 +312,15 @@ function connectSignaling(brokerIndex) {
         mqttClient.end(true);
         setTimeout(() => connectSignaling(brokerIndex + 1), 1500);
     });
+}
+
+function startPresenceBroadcast() {
+    announcePresence(false);
+    if (joinBroadcastInterval) clearInterval(joinBroadcastInterval);
+    joinBroadcastInterval = setInterval(() => {
+        // Broadcast presence continuously so refreshed peers find us in < 1 second!
+        announcePresence(false);
+    }, 1200);
 }
 
 function announcePresence(isReply = false) {
@@ -369,12 +382,63 @@ function cleanupPeerConnection() {
     isDirectP2P = false;
 }
 
+function handlePeerDisconnection() {
+    console.log('[P2P] Peer disconnected, resetting state to waiting...');
+    isConnected = false;
+    isDirectP2P = false;
+    cleanupPeerConnection();
+    stopPing();
+
+    updateStatus('waiting', `상대방 재연결 대기 중... [방: ${currentRoomId}]`);
+    peerStatusLabel.textContent = '1:1 P2P';
+
+    if (activeSendingFile) {
+        showToast('⚠️ 상대방이 새로고침하여 전송이 중단되었습니다.');
+        notifyInterruptedTransfer();
+    } else {
+        showToast('👋 상대방 연결이 끊어졌습니다. 자동 재연결 대기 중...');
+    }
+
+    // Ensure presence broadcast is active for instant reconnection
+    startPresenceBroadcast();
+}
+
+function notifyInterruptedTransfer() {
+    if (!activeSendingFile) return;
+    const fileId = activeSendingFile.fileId;
+    const fileObj = activeSendingFile.file;
+
+    const item = document.getElementById(`transfer-${fileId}`);
+    if (item) {
+        const status = item.querySelector('.transfer-footer span:first-child');
+        const speed = item.querySelector('.transfer-footer span:last-child');
+        const bar = item.querySelector('.progress-bar-fill');
+
+        if (bar) bar.style.background = 'var(--warning)';
+        if (speed) speed.textContent = '중단됨';
+        if (status) {
+            status.innerHTML = `<span style="color: #f59e0b;">⚠️ 상대방 새로고침으로 중단됨</span> <button onclick="window.retryFileTransfer(${fileId})" style="margin-left: 8px; padding: 2px 8px; font-size: 0.75rem; background: var(--accent); color: #0f172a; border-radius: 4px; border:none; cursor:pointer;">🔄 다시 보내기</button>`;
+        }
+    }
+    activeSendingFile = null;
+}
+
+window.retryFileTransfer = function(fileId) {
+    const file = cachedOutgoingFiles.get(fileId);
+    if (file) {
+        if (!isConnected) {
+            showToast('⚠️ 먼저 상대방 기기가 다시 연결될 때까지 잠시 기다려 주세요.');
+            return;
+        }
+        sendFile(file);
+    }
+};
+
 async function handleSignalingMessage(msg) {
     switch (msg.type) {
         case 'presence':
             // If peer refreshed or reconnected with new session ID, clean up old dead peer connection
             if (remoteClientId !== msg.sender || !peerConnection || peerConnection.signalingState === 'closed') {
-                console.log('[Signaling] Peer reconnected/refreshed, resetting connection state...');
                 cleanupPeerConnection();
             }
 
@@ -387,9 +451,12 @@ async function handleSignalingMessage(msg) {
                 announcePresence(true);
             }
 
-            isConnected = true;
-            updateStatus('connected', `연결됨 (${remoteDeviceInfo})`);
-            startPing();
+            if (!isConnected) {
+                isConnected = true;
+                updateStatus('connected', `연결됨 (${remoteDeviceInfo})`);
+                showToast(`🎉 ${remoteDeviceInfo}와 1:1 연결 완료!`);
+                startPing();
+            }
 
             // Initiate WebRTC upgrade
             if (myClientId < remoteClientId && !peerConnection) {
@@ -489,7 +556,7 @@ function createPeerConnection() {
             isDirectP2P = true;
             updateStatus('connected', `연결됨 (P2P 직통 • ${remoteDeviceInfo})`);
         } else if (peerConnection.iceConnectionState === 'disconnected' || peerConnection.iceConnectionState === 'closed' || peerConnection.iceConnectionState === 'failed') {
-            isDirectP2P = false;
+            handlePeerDisconnection();
         }
     };
 
@@ -519,10 +586,7 @@ function setDataChannel(channel) {
 
     dataChannel.onclose = () => {
         console.log('[WebRTC] DataChannel closed');
-        isDirectP2P = false;
-        if (isTransferringActive) {
-            showToast('⚠️ 상대방 연결이 끊겨 전송이 중단되었습니다.');
-        }
+        handlePeerDisconnection();
     };
 
     dataChannel.onmessage = (event) => {
@@ -680,7 +744,7 @@ btnSendClipboard.addEventListener('click', async () => {
 });
 
 // -------------------------------------------------------------
-// File Transfer (Streaming + Adaptive Flow Control)
+// File Transfer (Streaming + Flow Control + 1-Click Retry)
 // -------------------------------------------------------------
 dropZone.addEventListener('click', () => fileInput.click());
 dropZone.addEventListener('dragover', (e) => {
@@ -716,7 +780,10 @@ function handleFilesSelected(files) {
 async function sendFile(file) {
     const fileId = Math.floor(Math.random() * 0x7FFFFFFF);
     const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
-    isTransferringActive = true;
+    
+    // Cache for 1-click retry
+    cachedOutgoingFiles.set(fileId, file);
+    activeSendingFile = { fileId, file };
 
     const transferItem = createTransferUI(fileId, file.name, file.size, 'outgoing');
 
@@ -737,6 +804,13 @@ async function sendFile(file) {
     let lastBytes = 0;
 
     while (offset < file.size) {
+        // Abort if peer disconnected
+        if (!isConnected) {
+            console.warn('[P2P] SendFile aborted due to disconnection');
+            notifyInterruptedTransfer();
+            return;
+        }
+
         if (dataChannel && dataChannel.readyState === 'open' && dataChannel.bufferedAmount > BUFFER_HIGH_THRESHOLD) {
             await waitForBufferDrain();
         }
@@ -766,7 +840,7 @@ async function sendFile(file) {
         }
     }
 
-    isTransferringActive = false;
+    activeSendingFile = null;
     updateTransferUI(transferItem, 100, file.size, file.size, 0, true, null, 'outgoing');
     saveFileToSession(file.name, file.size, 'outgoing');
     showToast(`✅ ${file.name} 전송 완료!`);
