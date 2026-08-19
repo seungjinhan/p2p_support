@@ -1,18 +1,23 @@
 /**
  * WebRTC P2P DataChannel Application (GitHub Pages Serverless Edition)
  * High-performance file transfer & real-time messaging using 9-byte binary headers.
+ * 
+ * Auto-negotiating symmetric peer discovery:
+ * Automatically determines Host vs Guest role without role mismatch errors.
  */
 
 // Configuration
 const CHUNK_SIZE = 32 * 1024; // 32KB chunks
 const BUFFER_LOW_THRESHOLD = 128 * 1024; // 128KB buffer threshold
 const BUFFER_HIGH_THRESHOLD = 512 * 1024; // 512KB pause threshold
-const PEER_PREFIX = 'p2pshare-v1-';
+const PEER_PREFIX = 'p2p-v2-';
 
 const rtcConfig = {
     iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+        { urls: 'stun:stun.cloudflare.com:3478' },
         { urls: 'stun:global.stun.twilio.com:3478' }
     ]
 };
@@ -24,16 +29,18 @@ let currentRoomId = '';
 let isHost = false;
 let pingInterval = null;
 let remoteDeviceInfo = '상대방';
+let retryCount = 0;
+const MAX_RETRIES = 6;
 
 // Incoming / Outgoing file tracking
-const incomingTransfers = new Map(); // fileId -> { name, size, totalChunks, chunksReceived, chunks: [], startTime, lastBytes, lastTime }
-const outgoingTransfers = new Map(); // fileId -> { file, name, size, totalChunks, chunksSent }
+const incomingTransfers = new Map();
+const outgoingTransfers = new Map();
 
 // Detect Device Information
 function getDeviceDescription() {
     const ua = navigator.userAgent;
     let os = 'Unknown Device';
-    if (/iPad|Macintosh/i.test(ua) && 'ontouchend' in document) os = 'iPad';
+    if (/iPad/i.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)) os = 'iPad';
     else if (/iPhone/i.test(ua)) os = 'iPhone';
     else if (/Macintosh|Mac OS X/i.test(ua)) os = 'MacBook / Mac';
     else if (/Windows NT/i.test(ua)) os = 'Windows PC';
@@ -100,27 +107,20 @@ function generateRoomCode() {
 // Initialize Application
 function initApp() {
     const params = new URLSearchParams(window.location.search);
-    const roomParam = params.get('room');
+    let roomParam = params.get('room');
 
     myDeviceInfo.textContent = `내 기기: ${myDeviceDesc}`;
 
-    if (roomParam && roomParam.trim() !== '') {
-        // Guest Mode (Joining an existing room)
-        currentRoomId = roomParam.trim().toUpperCase();
-        isHost = false;
-        roomCodeDisplay.textContent = currentRoomId;
-        renderQRCode();
-        initGuestMode();
-    } else {
-        // Host Mode (Creating a new room)
-        currentRoomId = generateRoomCode();
-        isHost = true;
-        roomCodeDisplay.textContent = currentRoomId;
-        const newUrl = `${window.location.pathname}?room=${currentRoomId}`;
+    if (!roomParam || roomParam.trim() === '') {
+        roomParam = generateRoomCode();
+        const newUrl = `${window.location.pathname}?room=${roomParam}`;
         window.history.replaceState({}, '', newUrl);
-        renderQRCode();
-        initHostMode();
     }
+
+    currentRoomId = roomParam.trim().toUpperCase();
+    roomCodeDisplay.textContent = currentRoomId;
+    renderQRCode();
+    startP2PSession(currentRoomId);
 }
 
 function renderQRCode() {
@@ -150,53 +150,82 @@ btnJoinRoom.addEventListener('click', () => {
 });
 
 // -------------------------------------------------------------
-// WebRTC Signaling & Connection via PeerJS
+// Symmetric P2P Auto-Discovery Engine
 // -------------------------------------------------------------
-function initHostMode() {
-    const hostPeerId = `${PEER_PREFIX}${currentRoomId}-host`;
-    updateStatus('waiting', '상대방 연결 대기 중...');
+function startP2PSession(roomId) {
+    const hostPeerId = `${PEER_PREFIX}${roomId}-host`;
+    const guestPeerId = `${PEER_PREFIX}${roomId}-guest-${Math.random().toString(36).substring(2, 7)}`;
 
-    peer = new Peer(hostPeerId, {
-        config: rtcConfig,
-        debug: 1
-    });
+    updateStatus('connecting', 'P2P 네트워크 준비 중...');
+
+    // 1. Try to initialize as Host first
+    try {
+        peer = new Peer(hostPeerId, {
+            config: rtcConfig,
+            debug: 1
+        });
+    } catch (err) {
+        console.error('Peer init error:', err);
+        updateStatus('error', '초기화 실패');
+        return;
+    }
 
     peer.on('open', (id) => {
-        console.log('[Host] PeerJS open with ID:', id);
-        updateStatus('waiting', '상대방 기기 연결 대기 중...');
+        console.log('[P2P] Registered as Room Host:', id);
+        isHost = true;
+        updateStatus('waiting', '상대방 연결 대기 중...');
     });
 
     peer.on('connection', (conn) => {
-        console.log('[Host] Incoming connection from guest');
+        console.log('[P2P Host] Guest connected!');
         setupDataConnection(conn);
     });
 
     peer.on('error', (err) => {
-        console.error('[Host] Peer error:', err);
+        console.warn('[P2P] Event error:', err.type, err);
+
         if (err.type === 'unavailable-id') {
-            // If host ID already taken, retry with random suffix
-            currentRoomId = generateRoomCode();
-            roomCodeDisplay.textContent = currentRoomId;
-            renderQRCode();
-            initHostMode();
+            // Host is ALREADY active! We become the Guest!
+            console.log('[P2P] Host exists, switching to Guest mode...');
+            if (peer) {
+                peer.destroy();
+                peer = null;
+            }
+            connectAsGuest(guestPeerId, hostPeerId);
+        } else if (err.type === 'peer-unavailable') {
+            // Target host not ready yet -> retry
+            if (retryCount < MAX_RETRIES) {
+                retryCount++;
+                updateStatus('connecting', `상대방 검색 중 (${retryCount}/${MAX_RETRIES})...`);
+                setTimeout(() => {
+                    if (!activeConnection || !activeConnection.open) {
+                        connectAsGuest(guestPeerId, hostPeerId);
+                    }
+                }, 1500);
+            } else {
+                updateStatus('error', '상대방 기기를 찾을 수 없습니다. PC 화면을 켜둔 상태에서 다시 시도해 주세요.');
+            }
         } else {
-            updateStatus('error', '시그널링 오류: ' + (err.message || err.type));
+            updateStatus('error', '연결 오류: ' + (err.message || err.type));
         }
     });
 }
 
-function initGuestMode() {
-    const guestPeerId = `${PEER_PREFIX}${currentRoomId}-guest-${Math.random().toString(36).substring(2, 6)}`;
-    const hostPeerId = `${PEER_PREFIX}${currentRoomId}-host`;
+function connectAsGuest(guestPeerId, hostPeerId) {
     updateStatus('connecting', '호스트 기기에 연결 중...');
 
-    peer = new Peer(guestPeerId, {
-        config: rtcConfig,
-        debug: 1
-    });
+    try {
+        peer = new Peer(guestPeerId, {
+            config: rtcConfig,
+            debug: 1
+        });
+    } catch (err) {
+        console.error('Guest peer init error:', err);
+        return;
+    }
 
-    peer.on('open', () => {
-        console.log('[Guest] Connecting to host:', hostPeerId);
+    peer.on('open', (id) => {
+        console.log('[P2P Guest] Registered with ID:', id, 'Connecting to:', hostPeerId);
         const conn = peer.connect(hostPeerId, {
             metadata: { device: myDeviceDesc },
             reliable: true
@@ -205,8 +234,19 @@ function initGuestMode() {
     });
 
     peer.on('error', (err) => {
-        console.error('[Guest] Peer error:', err);
-        updateStatus('error', '연결 실패: ' + (err.message || err.type));
+        console.warn('[P2P Guest] Error:', err.type, err);
+        if (err.type === 'peer-unavailable' && retryCount < MAX_RETRIES) {
+            retryCount++;
+            updateStatus('connecting', `연결 시도 중 (${retryCount}/${MAX_RETRIES})...`);
+            setTimeout(() => {
+                if (!activeConnection || !activeConnection.open) {
+                    if (peer) peer.destroy();
+                    connectAsGuest(guestPeerId, hostPeerId);
+                }
+            }, 1500);
+        } else {
+            updateStatus('error', '호스트 연결 실패. PC 화면의 QR 코드가 켜져 있는지 확인해 주세요.');
+        }
     });
 }
 
@@ -215,7 +255,6 @@ function setupDataConnection(conn) {
 
     conn.on('open', () => {
         console.log('[WebRTC] DataChannel OPENED!');
-        // Configure underlying RTCDataChannel for binary & flow control
         if (conn.dataChannel) {
             conn.dataChannel.binaryType = 'arraybuffer';
             conn.dataChannel.bufferedAmountLowThreshold = BUFFER_LOW_THRESHOLD;
@@ -224,13 +263,10 @@ function setupDataConnection(conn) {
         remoteDeviceInfo = (conn.metadata && conn.metadata.device) ? conn.metadata.device : '상대 기기';
         updateStatus('connected', `연결됨 (${remoteDeviceInfo})`);
         peerStatusLabel.textContent = `1:1 (${remoteDeviceInfo})`;
-        showToast(`🎉 ${remoteDeviceInfo}와 P2P 연결 완료!`);
+        showToast(`🎉 ${remoteDeviceInfo}와 1:1 P2P 연결 완료!`);
 
-        // Send our device info if we are host
-        if (isHost) {
-            conn.send(ProtocolCodec.encodeChat(`[시스템] ${myDeviceDesc} 접속 완료`));
-        }
-
+        // Send our device info greeting
+        conn.send(ProtocolCodec.encodeChat(`[시스템] ${myDeviceDesc} 연결 완료`));
         startPing();
     });
 
@@ -245,14 +281,13 @@ function setupDataConnection(conn) {
     conn.on('close', () => {
         console.log('[WebRTC] DataChannel CLOSED');
         stopPing();
-        updateStatus('waiting', '상대방 기기 연결 대기 중...');
+        updateStatus('waiting', '상대방 연결 대기 중...');
         peerStatusLabel.textContent = '1:1 P2P';
-        showToast('👋 상대방 기기 연결이 종료되었습니다.');
+        showToast('👋 상대방 연결이 종료되었습니다.');
     });
 
     conn.on('error', (err) => {
-        console.error('[WebRTC] Connection error:', err);
-        showToast('⚠️ 연결 오류가 발생했습니다.');
+        console.error('[WebRTC] Channel error:', err);
     });
 }
 
@@ -340,7 +375,7 @@ function handleIncomingPacket(arrayBuffer) {
             }
         }
     } catch (err) {
-        console.error('[Protocol] Packet handling error:', err);
+        console.error('[Protocol] Packet decode error:', err);
     }
 }
 
