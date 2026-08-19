@@ -1,5 +1,5 @@
 /**
- * WebRTC P2P DataChannel Engine with Zero-Fail Hybrid Relay & Mutual Handshake
+ * WebRTC P2P DataChannel Engine with Zero-Fail Auto-Reconnection & Mutual Handshake
  */
 
 // Configuration
@@ -245,7 +245,7 @@ function saveFileToSession(name, size, direction) {
 }
 
 // -------------------------------------------------------------
-// Global MQTT Signaling with Mutual Handshake (Stable Channel)
+// Global MQTT Signaling with Auto-Reconnection & Mutual Handshake
 // -------------------------------------------------------------
 function connectSignaling(brokerIndex) {
     const brokerUrl = BROKER_URLS[brokerIndex % BROKER_URLS.length];
@@ -278,7 +278,7 @@ function connectSignaling(brokerIndex) {
                 if (joinBroadcastInterval) clearInterval(joinBroadcastInterval);
                 joinBroadcastInterval = setInterval(() => {
                     if (!isConnected) announcePresence(false);
-                }, 1200);
+                }, 1500);
             }
         });
     });
@@ -343,26 +343,55 @@ function channelSend(arrayBuffer) {
 }
 
 // -------------------------------------------------------------
-// WebRTC Signaling & Mutual Handshake
+// WebRTC Signaling & Dynamic Re-negotiation
 // -------------------------------------------------------------
+function cleanupPeerConnection() {
+    if (dataChannel) {
+        try {
+            dataChannel.onopen = null;
+            dataChannel.onclose = null;
+            dataChannel.onmessage = null;
+            dataChannel.onerror = null;
+            dataChannel.close();
+        } catch (e) {}
+        dataChannel = null;
+    }
+    if (peerConnection) {
+        try {
+            peerConnection.onicecandidate = null;
+            peerConnection.oniceconnectionstatechange = null;
+            peerConnection.ondatachannel = null;
+            peerConnection.close();
+        } catch (e) {}
+        peerConnection = null;
+    }
+    candidateQueue = [];
+    isDirectP2P = false;
+}
+
 async function handleSignalingMessage(msg) {
     switch (msg.type) {
         case 'presence':
+            // If peer refreshed or reconnected with new session ID, clean up old dead peer connection
+            if (remoteClientId !== msg.sender || !peerConnection || peerConnection.signalingState === 'closed') {
+                console.log('[Signaling] Peer reconnected/refreshed, resetting connection state...');
+                cleanupPeerConnection();
+            }
+
             remoteClientId = msg.sender;
             remoteDeviceInfo = msg.device || '상대 기기';
             peerStatusLabel.textContent = `1:1 (${remoteDeviceInfo})`;
 
+            // Reply immediately so newly joined peer knows we are online
             if (!msg.isReply) {
                 announcePresence(true);
             }
 
-            if (!isConnected) {
-                isConnected = true;
-                updateStatus('connected', `연결됨 (${remoteDeviceInfo})`);
-                showToast(`🎉 ${remoteDeviceInfo}와 1:1 연결 완료!`);
-                startPing();
-            }
+            isConnected = true;
+            updateStatus('connected', `연결됨 (${remoteDeviceInfo})`);
+            startPing();
 
+            // Initiate WebRTC upgrade
             if (myClientId < remoteClientId && !peerConnection) {
                 createPeerConnection();
                 createDataChannel();
@@ -378,14 +407,16 @@ async function handleSignalingMessage(msg) {
 
         case 'offer':
             if (msg.target && msg.target !== myClientId) return;
+            if (remoteClientId !== msg.sender) {
+                cleanupPeerConnection();
+            }
+
             remoteClientId = msg.sender;
             remoteDeviceInfo = msg.device || '상대 기기';
 
-            if (!isConnected) {
-                isConnected = true;
-                updateStatus('connected', `연결됨 (${remoteDeviceInfo})`);
-                startPing();
-            }
+            isConnected = true;
+            updateStatus('connected', `연결됨 (${remoteDeviceInfo})`);
+            startPing();
 
             createPeerConnection();
             try {
@@ -457,6 +488,8 @@ function createPeerConnection() {
         if (peerConnection.iceConnectionState === 'connected' || peerConnection.iceConnectionState === 'completed') {
             isDirectP2P = true;
             updateStatus('connected', `연결됨 (P2P 직통 • ${remoteDeviceInfo})`);
+        } else if (peerConnection.iceConnectionState === 'disconnected' || peerConnection.iceConnectionState === 'closed' || peerConnection.iceConnectionState === 'failed') {
+            isDirectP2P = false;
         }
     };
 
@@ -486,6 +519,7 @@ function setDataChannel(channel) {
 
     dataChannel.onclose = () => {
         console.log('[WebRTC] DataChannel closed');
+        isDirectP2P = false;
         if (isTransferringActive) {
             showToast('⚠️ 상대방 연결이 끊겨 전송이 중단되었습니다.');
         }
