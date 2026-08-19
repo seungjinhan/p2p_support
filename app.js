@@ -1060,7 +1060,7 @@ function notifyInterruptedTransfer() {
         if (bar) bar.style.background = 'var(--warning)';
         if (speed) speed.textContent = '중단됨';
         if (status) {
-            status.innerHTML = `<span style="color: #f59e0b;">⚠️ 상대방 연결 끊김으로 중단됨</span> <button onclick="window.retryFileTransfer(${fileId})" style="margin-left: 8px; padding: 2px 8px; font-size: 0.75rem; background: var(--accent); color: #0f172a; border-radius: 4px; border:none; cursor:pointer;">🔄 다시 보내기</button>`;
+            status.innerHTML = `<span style="color: #f59e0b;">⚠️ 상대방 연결 끊김으로 중단됨</span> <button id="btn-retry-${fileId}" onclick="window.retryFileTransfer(${fileId})" style="margin-left: 8px; padding: 2px 8px; font-size: 0.75rem; background: var(--accent); color: #0f172a; border-radius: 4px; border:none; cursor:pointer;">🔄 다시 보내기</button>`;
         }
     }
     activeSendingFile = null;
@@ -1068,13 +1068,32 @@ function notifyInterruptedTransfer() {
 
 window.retryFileTransfer = function(fileId) {
     const file = cachedOutgoingFiles.get(fileId);
-    if (file) {
-        if (activePeers.size === 0) {
-            showToast('⚠️ 먼저 상대방 기기가 다시 연결될 때까지 기다려 주세요.');
-            return;
-        }
-        sendFile(file);
+    if (!file) return;
+
+    if (activePeers.size === 0) {
+        showToast('⚠️ 먼저 상대방 기기가 다시 연결될 때까지 기다려 주세요.');
+        return;
     }
+
+    // 1. Disable button immediately to prevent multiple clicks
+    const btn = document.getElementById(`btn-retry-${fileId}`);
+    if (btn) {
+        btn.disabled = true;
+        btn.textContent = '전송 시작 중...';
+        btn.style.opacity = '0.5';
+    }
+
+    // 2. Remove the old interrupted card cleanly from the UI
+    const oldItem = document.getElementById(`transfer-${fileId}`);
+    if (oldItem) {
+        oldItem.remove();
+    }
+
+    // 3. Clear cache entry for old fileId
+    cachedOutgoingFiles.delete(fileId);
+
+    // 4. Start clean new transfer
+    sendFile(file);
 };
 
 function waitForBufferDrain() {
