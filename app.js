@@ -1,11 +1,5 @@
 /**
- * WebRTC P2P DataChannel Engine with Zero-Fail Hybrid Relay & Full State Persistence
- * 
- * Features:
- * 1. Out-of-order chunk queueing (zero dropped packets).
- * 2. Adaptive chunk pacing (smooth streaming across WebRTC & MQTT).
- * 3. Session persistence (refreshing the page preserves room, chat & downloaded files).
- * 4. Real-time dual-side progress bars & speedometers.
+ * WebRTC P2P DataChannel Engine with Zero-Fail Hybrid Relay, State Persistence & Unload Protection
  */
 
 // Configuration
@@ -51,6 +45,9 @@ let isDirectP2P = false;
 let pingInterval = null;
 let joinBroadcastInterval = null;
 let candidateQueue = [];
+
+// Active transfer tracker for unload protection
+let isTransferringActive = false;
 
 // Incoming / Outgoing file tracking & early chunk buffering
 const incomingTransfers = new Map();
@@ -98,6 +95,15 @@ const chatInput = document.getElementById('chatInput');
 const btnSendClipboard = document.getElementById('btnSendClipboard');
 const peerStatusLabel = document.getElementById('peerStatusLabel');
 
+// Accidental Refresh / Leave Page Protection
+window.addEventListener('beforeunload', (e) => {
+    if (isTransferringActive || incomingTransfers.size > 0) {
+        e.preventDefault();
+        e.returnValue = '파일 전송이 진행 중입니다. 페이지를 벗어나시겠습니까?';
+        return e.returnValue;
+    }
+});
+
 // Toast Notification
 function showToast(msg) {
     const toast = document.createElement('div');
@@ -137,7 +143,6 @@ function initApp() {
 
     myDeviceInfo.textContent = `내 기기: ${myDeviceDesc}`;
 
-    // If no room in URL, check localStorage before generating a new one
     if (!roomParam || roomParam.trim() === '') {
         const savedRoom = localStorage.getItem(STORAGE_KEY_ROOM);
         if (savedRoom && savedRoom.length === 6) {
@@ -199,7 +204,6 @@ function saveChatToSession(text, direction) {
 
 function restoreSessionHistory() {
     try {
-        // Restore Chat
         const chatHist = JSON.parse(sessionStorage.getItem(STORAGE_KEY_CHAT) || '[]');
         if (chatHist.length > 0) {
             chatMessages.innerHTML = '';
@@ -218,7 +222,6 @@ function restoreSessionHistory() {
             chatMessages.scrollTop = chatMessages.scrollHeight;
         }
 
-        // Restore Completed File List
         const fileHist = JSON.parse(sessionStorage.getItem(STORAGE_KEY_FILES) || '[]');
         fileHist.forEach(item => {
             const div = document.createElement('div');
@@ -292,7 +295,6 @@ function connectSignaling(brokerIndex) {
 
     mqttClient.on('message', async (topic, payload) => {
         try {
-            // Binary data packet relay
             if (topic.includes('/data/')) {
                 const targetId = topic.split('/').pop();
                 if (targetId === myClientId) {
@@ -490,6 +492,13 @@ function setDataChannel(channel) {
         updateStatus('connected', `연결됨 (P2P 직통 • ${remoteDeviceInfo})`);
     };
 
+    dataChannel.onclose = () => {
+        console.log('[WebRTC] DataChannel closed');
+        if (isTransferringActive) {
+            showToast('⚠️ 상대방 연결이 끊겨 전송이 중단되었습니다.');
+        }
+    };
+
     dataChannel.onmessage = (event) => {
         handleIncomingPacket(event.data);
     };
@@ -681,6 +690,7 @@ function handleFilesSelected(files) {
 async function sendFile(file) {
     const fileId = Math.floor(Math.random() * 0x7FFFFFFF);
     const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+    isTransferringActive = true;
 
     const transferItem = createTransferUI(fileId, file.name, file.size, 'outgoing');
 
@@ -736,6 +746,7 @@ async function sendFile(file) {
         }
     }
 
+    isTransferringActive = false;
     updateTransferUI(transferItem, 100, file.size, file.size, 0, true, null, 'outgoing');
     saveFileToSession(file.name, file.size, 'outgoing');
     showToast(`✅ ${file.name} 전송 완료!`);
@@ -789,7 +800,6 @@ function onReceiveFileMeta(fileId, meta) {
         }
     }
 
-    // Scroll into view
     if (item.ui) {
         item.ui.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
