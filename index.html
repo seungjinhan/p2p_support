@@ -46,7 +46,6 @@
             overflow-x: hidden;
         }
 
-        /* Header */
         header {
             background: rgba(15, 23, 42, 0.9);
             backdrop-filter: blur(12px);
@@ -146,7 +145,6 @@
             font-variant-numeric: tabular-nums;
         }
 
-        /* Main Layout */
         main {
             flex: 1;
             max-width: 1200px;
@@ -166,7 +164,6 @@
             }
         }
 
-        /* Cards */
         .card {
             background: var(--bg-card);
             border: 1px solid var(--border-color);
@@ -189,7 +186,6 @@
             padding-bottom: 10px;
         }
 
-        /* Sidebar / Connection Panel */
         .connection-panel {
             display: flex;
             flex-direction: column;
@@ -312,14 +308,12 @@
             gap: 8px;
         }
 
-        /* Content Panel */
         .content-panel {
             display: flex;
             flex-direction: column;
             gap: 16px;
         }
 
-        /* Dropzone */
         .dropzone {
             border: 2px dashed var(--border-color);
             border-radius: var(--radius-md);
@@ -356,7 +350,6 @@
             color: var(--text-muted);
         }
 
-        /* File Transfer List */
         .transfer-list {
             display: flex;
             flex-direction: column;
@@ -419,7 +412,6 @@
             color: var(--text-secondary);
         }
 
-        /* Chat Panel */
         .chat-card {
             flex: 1;
             display: flex;
@@ -490,7 +482,6 @@
             box-shadow: 0 0 0 2px var(--accent-glow);
         }
 
-        /* Toast */
         .toast {
             position: fixed;
             bottom: 20px;
@@ -536,7 +527,6 @@
     </header>
 
     <main>
-        <!-- Sidebar: Connection & QR Code -->
         <aside class="connection-panel">
             <div class="card">
                 <div class="card-title">
@@ -570,16 +560,13 @@
             </div>
         </aside>
 
-        <!-- Main Content: File Transfer & Chat -->
         <section class="content-panel">
-            <!-- File Transfer Card -->
             <div class="card">
                 <div class="card-title">
                     <span>대용량 파일 고속 전송 (9B Binary Header)</span>
                     <span style="font-size: 0.8rem; color: var(--accent);">서버 경유 0% • 무제한 용량</span>
                 </div>
 
-                <!-- Dropzone Area -->
                 <div id="dropZone" class="dropzone">
                     <div class="dropzone-icon">📁</div>
                     <div class="dropzone-title">파일을 여기에 드래그하거나 터치하여 선택</div>
@@ -587,11 +574,9 @@
                     <input type="file" id="fileInput" multiple style="display: none;">
                 </div>
 
-                <!-- Active Transfers List -->
                 <div id="transferList" class="transfer-list"></div>
             </div>
 
-            <!-- Chat & Clipboard Card -->
             <div class="card chat-card">
                 <div class="card-title">
                     <span>실시간 메시지 & 클립보드</span>
@@ -614,8 +599,8 @@
         </section>
     </main>
 
-    <!-- Dependencies & Scripts -->
-    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+    <!-- Global MQTT & WebRTC Scripts -->
+    <script src="https://unpkg.com/mqtt@5.3.5/dist/mqtt.min.js"></script>
     <script src="qr.min.js"></script>
     <script src="protocol.js"></script>
     <script src="app.js"></script>
