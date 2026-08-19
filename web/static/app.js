@@ -1,5 +1,5 @@
 /**
- * WebRTC P2P DataChannel Engine with 6-Digit Key, SHA-256 Password Authentication & Full-Duplex Transfer
+ * WebRTC P2P DataChannel Engine with 6-Digit Key, SHA-256 Auth, File Log Management (Delete/Multi-select/Scroll)
  */
 
 // Configuration: 16KB universally safe SCTP chunk size for full-duplex simultaneous transfer
@@ -100,6 +100,10 @@ const peerCountBadge = document.getElementById('peerCountBadge');
 const completedFilesLog = document.getElementById('completedFilesLog');
 const completedLogCountBadge = document.getElementById('completedLogCountBadge');
 const fileLogEmptyText = document.getElementById('fileLogEmptyText');
+const logActionBar = document.getElementById('logActionBar');
+const chkSelectAllLogs = document.getElementById('chkSelectAllLogs');
+const btnDeleteSelectedLogs = document.getElementById('btnDeleteSelectedLogs');
+const btnClearAllLogs = document.getElementById('btnClearAllLogs');
 const dropZone = document.getElementById('dropZone');
 const fileInput = document.getElementById('fileInput');
 const transferList = document.getElementById('transferList');
@@ -273,15 +277,17 @@ async function enterRoom(key, password) {
 }
 
 // Password show/hide toggle
-btnTogglePassword.addEventListener('click', () => {
-    if (lobbyPasswordInput.type === 'password') {
-        lobbyPasswordInput.type = 'text';
-        btnTogglePassword.textContent = '🙈';
-    } else {
-        lobbyPasswordInput.type = 'password';
-        btnTogglePassword.textContent = '👁️';
-    }
-});
+if (btnTogglePassword) {
+    btnTogglePassword.addEventListener('click', () => {
+        if (lobbyPasswordInput.type === 'password') {
+            lobbyPasswordInput.type = 'text';
+            btnTogglePassword.textContent = '🙈';
+        } else {
+            lobbyPasswordInput.type = 'password';
+            btnTogglePassword.textContent = '👁️';
+        }
+    });
+}
 
 // Key Input formatting
 lobbyKeyInput.addEventListener('input', (e) => {
@@ -337,7 +343,7 @@ btnCopyLink.addEventListener('click', async () => {
     const fullURL = window.location.origin + window.location.pathname + `?room=${currentRoomId}`;
     try {
         await navigator.clipboard.writeText(fullURL);
-        showToast('📋 초대 링크가 클립보드에 복사되었습니다! (비밀번호는 별도 전달)');
+        showToast('📋 초대 링크가 복사되었습니다! (비밀번호는 별도 전달)');
     } catch (e) {
         prompt('초대 링크 복사:', fullURL);
     }
@@ -391,14 +397,13 @@ let lastRenderedPeerKeys = '';
 function renderPeerList() {
     if (!peerListContainer) return;
 
-    // Smart DOM diffing to eliminate flickering
     const currentKeys = Array.from(activePeers.entries())
         .map(([id, p]) => `${id}:${p.device}`)
         .sort()
         .join('|') + `_direct:${isDirectP2P}`;
 
     if (currentKeys === lastRenderedPeerKeys) {
-        return; // No change: skip DOM wipe to eliminate flicker!
+        return;
     }
     lastRenderedPeerKeys = currentKeys;
 
@@ -469,42 +474,145 @@ function appendSystemMessage(text) {
 }
 
 // -------------------------------------------------------------
-// Left Sidebar Completed Files Log Management
+// Left Sidebar Completed Files Log Management (Delete / Multi-select / Scroll)
 // -------------------------------------------------------------
 function addFileToCompletedLog(fileName, fileSize, direction, downloadUrl = null) {
-    if (fileLogEmptyText) fileLogEmptyText.style.display = 'none';
-
-    const div = document.createElement('div');
-    div.className = 'file-log-item';
-
-    const icon = direction === 'outgoing' ? '📤' : '📥';
-    const actionText = direction === 'outgoing' ? '전송 완료' : '수신 완료';
     const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-
-    let downloadActionHtml = '';
-    if (direction === 'incoming' && downloadUrl) {
-        downloadActionHtml = `<a href="${downloadUrl}" download="${fileName}" class="file-log-download-btn">💾 저장</a>`;
-    }
-
-    div.innerHTML = `
-        <div class="file-log-top">
-            <span class="file-log-name">${icon} ${fileName}</span>
-            <span style="font-size: 0.72rem; color: var(--accent); font-weight:600;">${formatBytes(fileSize)}</span>
-        </div>
-        <div class="file-log-bottom">
-            <span>${actionText} • ${timeStr}</span>
-            ${downloadActionHtml}
-        </div>
-    `;
-
-    completedFilesLog.prepend(div);
-    updateCompletedLogCount();
     saveFileToSession(fileName, fileSize, direction, timeStr, downloadUrl);
+    renderCompletedFilesLog();
 }
 
-function updateCompletedLogCount() {
-    const count = completedFilesLog.querySelectorAll('.file-log-item').length;
-    completedLogCountBadge.textContent = `${count}개`;
+function renderCompletedFilesLog() {
+    if (!completedFilesLog) return;
+    const fileHist = JSON.parse(sessionStorage.getItem(STORAGE_KEY_FILES) || '[]');
+
+    completedFilesLog.innerHTML = '';
+
+    if (fileHist.length === 0) {
+        if (fileLogEmptyText) {
+            fileLogEmptyText.style.display = 'block';
+            completedFilesLog.appendChild(fileLogEmptyText);
+        }
+        if (logActionBar) logActionBar.style.display = 'none';
+        if (completedLogCountBadge) completedLogCountBadge.textContent = '0개';
+        if (chkSelectAllLogs) chkSelectAllLogs.checked = false;
+        if (btnDeleteSelectedLogs) {
+            btnDeleteSelectedLogs.disabled = true;
+            btnDeleteSelectedLogs.textContent = '선택 삭제 (0)';
+        }
+        return;
+    }
+
+    if (fileLogEmptyText) fileLogEmptyText.style.display = 'none';
+    if (logActionBar) logActionBar.style.display = 'flex';
+    if (completedLogCountBadge) completedLogCountBadge.textContent = `${fileHist.length}개`;
+    if (chkSelectAllLogs) chkSelectAllLogs.checked = false;
+
+    fileHist.forEach((item, index) => {
+        const div = document.createElement('div');
+        div.className = 'file-log-item';
+        div.id = `file-log-item-${index}`;
+
+        const icon = item.direction === 'outgoing' ? '📤' : '📥';
+        const actionText = item.direction === 'outgoing' ? '전송 완료' : '수신 완료';
+
+        let downloadActionHtml = '';
+        if (item.direction === 'incoming' && item.downloadUrl) {
+            downloadActionHtml = `<a href="${item.downloadUrl}" download="${item.name}" class="file-log-download-btn">💾 저장</a>`;
+        }
+
+        div.innerHTML = `
+            <div class="file-log-top">
+                <div class="file-log-title-area">
+                    <input type="checkbox" class="chk-log-item" data-index="${index}" style="cursor: pointer;">
+                    <span class="file-log-name" title="${item.name}">${icon} ${item.name}</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 6px;">
+                    <span style="font-size: 0.72rem; color: var(--accent); font-weight:600;">${formatBytes(item.size)}</span>
+                    <button class="btn-delete-single" onclick="window.deleteSingleLog(${index})" title="이 기록 삭제">🗑️</button>
+                </div>
+            </div>
+            <div class="file-log-bottom">
+                <span>${actionText} • ${item.time || ''}</span>
+                ${downloadActionHtml}
+            </div>
+        `;
+        completedFilesLog.appendChild(div);
+    });
+
+    updateSelectedLogsCount();
+}
+
+window.deleteSingleLog = function(index) {
+    const fileHist = JSON.parse(sessionStorage.getItem(STORAGE_KEY_FILES) || '[]');
+    if (index >= 0 && index < fileHist.length) {
+        fileHist.splice(index, 1);
+        sessionStorage.setItem(STORAGE_KEY_FILES, JSON.stringify(fileHist));
+        renderCompletedFilesLog();
+        showToast('🗑️ 파일 기록을 삭제했습니다.');
+    }
+};
+
+function updateSelectedLogsCount() {
+    const checkboxes = completedFilesLog.querySelectorAll('.chk-log-item:checked');
+    const count = checkboxes.length;
+    if (btnDeleteSelectedLogs) {
+        btnDeleteSelectedLogs.disabled = (count === 0);
+        btnDeleteSelectedLogs.textContent = `선택 삭제 (${count})`;
+    }
+    const allCheckboxes = completedFilesLog.querySelectorAll('.chk-log-item');
+    if (chkSelectAllLogs && allCheckboxes.length > 0) {
+        chkSelectAllLogs.checked = (count === allCheckboxes.length);
+    }
+}
+
+// Event Listeners for File Log Actions
+if (chkSelectAllLogs) {
+    chkSelectAllLogs.addEventListener('change', (e) => {
+        const checked = e.target.checked;
+        const allCheckboxes = completedFilesLog.querySelectorAll('.chk-log-item');
+        allCheckboxes.forEach(cb => cb.checked = checked);
+        updateSelectedLogsCount();
+    });
+}
+
+if (completedFilesLog) {
+    completedFilesLog.addEventListener('change', (e) => {
+        if (e.target.classList.contains('chk-log-item')) {
+            updateSelectedLogsCount();
+        }
+    });
+}
+
+if (btnDeleteSelectedLogs) {
+    btnDeleteSelectedLogs.addEventListener('click', () => {
+        const checkboxes = completedFilesLog.querySelectorAll('.chk-log-item:checked');
+        if (checkboxes.length === 0) return;
+
+        const indicesToDelete = new Set(Array.from(checkboxes).map(cb => parseInt(cb.getAttribute('data-index'))));
+        const fileHist = JSON.parse(sessionStorage.getItem(STORAGE_KEY_FILES) || '[]');
+        const updatedHist = fileHist.filter((_, idx) => !indicesToDelete.has(idx));
+
+        sessionStorage.setItem(STORAGE_KEY_FILES, JSON.stringify(updatedHist));
+        renderCompletedFilesLog();
+        showToast(`🗑️ ${indicesToDelete.size}개의 기록을 삭제했습니다.`);
+    });
+}
+
+if (btnClearAllLogs) {
+    btnClearAllLogs.addEventListener('click', () => {
+        const fileHist = JSON.parse(sessionStorage.getItem(STORAGE_KEY_FILES) || '[]');
+        if (fileHist.length === 0) {
+            showToast('⚠️ 삭제할 기록이 없습니다.');
+            return;
+        }
+
+        if (confirm('모든 파일 송수신 기록을 삭제하시겠습니까?')) {
+            sessionStorage.removeItem(STORAGE_KEY_FILES);
+            renderCompletedFilesLog();
+            showToast('🗑️ 모든 파일 기록이 삭제되었습니다.');
+        }
+    });
 }
 
 // -------------------------------------------------------------
@@ -527,7 +635,6 @@ function connectSignaling(brokerIndex) {
         return;
     }
 
-    // Secure isolated topic based on RoomKey + SHA256(Password)
     const roomTopic = `p2pshare/v8/${currentSecureTopic}/#`;
 
     mqttClient.on('connect', () => {
@@ -843,7 +950,6 @@ function stopPing() {
 // -------------------------------------------------------------
 function handleIncomingPacket(arrayBuffer) {
     try {
-        // Any incoming packet (chunk, meta, chat, ping) proves peer is active!
         activePeers.forEach((p) => {
             p.lastSeen = Date.now();
         });
@@ -1177,7 +1283,6 @@ window.retryFileTransfer = function(fileId) {
         return;
     }
 
-    // 1. Disable button immediately to prevent multiple clicks
     const btn = document.getElementById(`btn-retry-${fileId}`);
     if (btn) {
         btn.disabled = true;
@@ -1185,16 +1290,12 @@ window.retryFileTransfer = function(fileId) {
         btn.style.opacity = '0.5';
     }
 
-    // 2. Remove the old interrupted card cleanly from the UI
     const oldItem = document.getElementById(`transfer-${fileId}`);
     if (oldItem) {
         oldItem.remove();
     }
 
-    // 3. Clear cache entry for old fileId
     cachedOutgoingFiles.delete(fileId);
-
-    // 4. Start clean new transfer
     sendFile(file);
 };
 
@@ -1308,10 +1409,10 @@ function finalizeIncomingFile(fileId, item) {
 
     updateTransferUI(item.ui, fileId, 100, item.size, item.size, 0, true, 'incoming');
 
-    // 1. Add to Left Completed Files Log
+    // Add to Left Completed Files Log
     addFileToCompletedLog(item.name, item.size, 'incoming', downloadUrl);
 
-    // 2. Auto download
+    // Auto download
     try {
         const a = document.createElement('a');
         a.href = downloadUrl;
@@ -1326,7 +1427,7 @@ function finalizeIncomingFile(fileId, item) {
     showToast(`🎉 ${item.name} 수신 완료!`);
     incomingTransfers.delete(fileId);
 
-    // 3. Remove from active transfer screen after 1.2 seconds
+    // Remove from active transfer screen after 1.2 seconds
     setTimeout(() => {
         if (item.ui) {
             item.ui.classList.add('fade-out');
@@ -1413,7 +1514,7 @@ function saveFileToSession(name, size, direction, timeStr, downloadUrl) {
     try {
         const history = JSON.parse(sessionStorage.getItem(STORAGE_KEY_FILES) || '[]');
         history.unshift({ name, size, direction, time: timeStr, downloadUrl });
-        if (history.length > 30) history.pop();
+        if (history.length > 50) history.pop();
         sessionStorage.setItem(STORAGE_KEY_FILES, JSON.stringify(history));
     } catch (e) {}
 }
@@ -1440,40 +1541,7 @@ function restoreSessionHistory() {
         }
 
         // 2. Restore Completed Files Log to Left Sidebar
-        const fileHist = JSON.parse(sessionStorage.getItem(STORAGE_KEY_FILES) || '[]');
-        if (fileHist.length > 0 && fileLogEmptyText) {
-            fileLogEmptyText.style.display = 'none';
-        }
-        completedFilesLog.innerHTML = '';
-        if (fileHist.length === 0) {
-            completedFilesLog.appendChild(fileLogEmptyText);
-            fileLogEmptyText.style.display = 'block';
-        } else {
-            fileHist.forEach(item => {
-                const div = document.createElement('div');
-                div.className = 'file-log-item';
-                const icon = item.direction === 'outgoing' ? '📤' : '📥';
-                const actionText = item.direction === 'outgoing' ? '전송 완료' : '수신 완료';
-
-                let downloadActionHtml = '';
-                if (item.direction === 'incoming' && item.downloadUrl) {
-                    downloadActionHtml = `<a href="${item.downloadUrl}" download="${item.name}" class="file-log-download-btn">💾 저장</a>`;
-                }
-
-                div.innerHTML = `
-                    <div class="file-log-top">
-                        <span class="file-log-name">${icon} ${item.name}</span>
-                        <span style="font-size: 0.72rem; color: var(--accent); font-weight:600;">${formatBytes(item.size)}</span>
-                    </div>
-                    <div class="file-log-bottom">
-                        <span>${actionText} • ${item.time || ''}</span>
-                        ${downloadActionHtml}
-                    </div>
-                `;
-                completedFilesLog.appendChild(div);
-            });
-        }
-        updateCompletedLogCount();
+        renderCompletedFilesLog();
     } catch (e) {}
 }
 

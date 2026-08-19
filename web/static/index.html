@@ -404,49 +404,140 @@
             display: flex;
             flex-direction: column;
             gap: 8px;
-            max-height: 220px;
+            max-height: 250px;
             overflow-y: auto;
+            padding-right: 4px;
+        }
+
+        /* Custom Dark Scrollbar */
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 6px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: rgba(15, 23, 42, 0.5);
+            border-radius: 4px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: var(--border-color);
+            border-radius: 4px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+            background: var(--accent);
         }
 
         .file-log-empty {
             text-align: center;
             font-size: 0.8rem;
             color: var(--text-muted);
-            padding: 12px 6px;
+            padding: 14px 6px;
+        }
+
+        .btn-clear-log {
+            background: transparent;
+            border: 1px solid var(--border-color);
+            color: var(--text-muted);
+            font-size: 0.7rem;
+            font-weight: 500;
+            padding: 2px 6px;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        .btn-clear-log:hover {
+            color: var(--danger);
+            border-color: var(--danger);
+            background: rgba(239, 68, 68, 0.1);
+        }
+
+        .log-action-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 6px 8px;
+            background: var(--bg-secondary);
+            border-radius: var(--radius-sm);
+            border: 1px solid rgba(71, 85, 105, 0.4);
+            font-size: 0.75rem;
+        }
+
+        .btn-delete-selected {
+            background: rgba(239, 68, 68, 0.15);
+            color: #f87171;
+            border: 1px solid rgba(239, 68, 68, 0.35);
+            font-size: 0.72rem;
+            font-weight: 600;
+            padding: 2px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        .btn-delete-selected:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+        .btn-delete-selected:not(:disabled):hover {
+            background: #ef4444;
+            color: #fff;
         }
 
         .file-log-item {
             background: var(--bg-secondary);
             border: 1px solid var(--border-color);
             border-radius: var(--radius-sm);
-            padding: 9px 12px;
+            padding: 8px 10px;
             display: flex;
             flex-direction: column;
             gap: 4px;
             font-size: 0.82rem;
-            animation: fadeIn 0.3s ease;
+            transition: all 0.2s ease;
         }
 
         .file-log-top {
             display: flex;
             align-items: center;
             justify-content: space-between;
+            gap: 6px;
+        }
+
+        .file-log-title-area {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            max-width: 70%;
+            overflow: hidden;
         }
 
         .file-log-name {
             font-weight: 600;
-            max-width: 75%;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
+        }
+
+        .btn-delete-single {
+            background: transparent;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            font-size: 0.85rem;
+            padding: 2px 4px;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            transition: all 0.2s ease;
+        }
+        .btn-delete-single:hover {
+            color: var(--danger);
+            background: rgba(239, 68, 68, 0.15);
         }
 
         .file-log-bottom {
             display: flex;
             align-items: center;
             justify-content: space-between;
-            font-size: 0.75rem;
+            font-size: 0.72rem;
             color: var(--text-muted);
+            padding-left: 20px;
         }
 
         .file-log-download-btn {
@@ -818,9 +909,22 @@
             <div class="card">
                 <div class="card-title">
                     <span>📋 파일 송수신 기록</span>
-                    <span id="completedLogCountBadge" style="font-size: 0.75rem; color: var(--text-muted);">0개</span>
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <span id="completedLogCountBadge" style="font-size: 0.75rem; color: var(--text-muted);">0개</span>
+                        <button id="btnClearAllLogs" class="btn-clear-log" title="전체 기록 삭제">전체삭제</button>
+                    </div>
                 </div>
-                <div id="completedFilesLog" class="file-log-list">
+
+                <!-- Selection Action Bar (Visible when logs exist) -->
+                <div id="logActionBar" class="log-action-bar" style="display: none;">
+                    <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none;">
+                        <input type="checkbox" id="chkSelectAllLogs" style="cursor: pointer;">
+                        <span>전체 선택</span>
+                    </label>
+                    <button id="btnDeleteSelectedLogs" class="btn-delete-selected" disabled>선택 삭제 (0)</button>
+                </div>
+
+                <div id="completedFilesLog" class="file-log-list custom-scrollbar">
                     <div class="file-log-empty" id="fileLogEmptyText">완료된 파일이 여기에 기록됩니다.</div>
                 </div>
             </div>
