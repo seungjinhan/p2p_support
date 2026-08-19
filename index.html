@@ -223,16 +223,16 @@
         /* Main App Grid View */
         #mainAppView {
             flex: 1;
-            max-width: 1200px;
+            max-width: 1240px;
             width: 100%;
             margin: 0 auto;
             padding: 20px;
             display: grid;
-            grid-template-columns: 350px 1fr;
+            grid-template-columns: 360px 1fr;
             gap: 20px;
         }
 
-        @media (max-width: 860px) {
+        @media (max-width: 890px) {
             #mainAppView {
                 grid-template-columns: 1fr;
                 padding: 12px;
@@ -320,8 +320,8 @@
             margin: 0 auto;
             width: fit-content;
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-            min-height: 190px;
-            min-width: 190px;
+            min-height: 180px;
+            min-width: 180px;
         }
 
         /* Peer List Styles */
@@ -329,7 +329,7 @@
             display: flex;
             flex-direction: column;
             gap: 8px;
-            max-height: 180px;
+            max-height: 140px;
             overflow-y: auto;
         }
 
@@ -378,6 +378,74 @@
             border-radius: 50%;
             background-color: var(--success);
             box-shadow: 0 0 6px var(--success);
+        }
+
+        /* Completed Files Log List Styles (Left Sidebar) */
+        .file-log-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            max-height: 220px;
+            overflow-y: auto;
+        }
+
+        .file-log-empty {
+            text-align: center;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            padding: 12px 6px;
+        }
+
+        .file-log-item {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-sm);
+            padding: 9px 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            font-size: 0.82rem;
+            animation: fadeIn 0.3s ease;
+        }
+
+        .file-log-top {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .file-log-name {
+            font-weight: 600;
+            max-width: 75%;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .file-log-bottom {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
+        .file-log-download-btn {
+            color: var(--accent);
+            text-decoration: none;
+            font-weight: 700;
+            padding: 2px 6px;
+            border-radius: 4px;
+            background: rgba(56, 189, 248, 0.1);
+            border: 1px solid rgba(56, 189, 248, 0.3);
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .file-log-download-btn:hover {
+            background: var(--accent);
+            color: #0f172a;
         }
 
         .btn-group {
@@ -430,7 +498,7 @@
         .dropzone {
             border: 2px dashed var(--border-color);
             border-radius: var(--radius-md);
-            padding: 30px 16px;
+            padding: 32px 16px;
             text-align: center;
             background: rgba(30, 41, 59, 0.5);
             cursor: pointer;
@@ -480,6 +548,12 @@
             flex-direction: column;
             gap: 6px;
             animation: fadeIn 0.3s ease;
+            transition: all 0.5s ease;
+        }
+
+        .transfer-item.fade-out {
+            opacity: 0;
+            transform: translateY(-10px);
         }
 
         .transfer-header {
@@ -529,13 +603,13 @@
             flex: 1;
             display: flex;
             flex-direction: column;
-            min-height: 320px;
+            min-height: 300px;
         }
 
         .chat-messages {
             flex: 1;
             min-height: 180px;
-            max-height: 300px;
+            max-height: 280px;
             overflow-y: auto;
             display: flex;
             flex-direction: column;
@@ -690,11 +764,22 @@
             <!-- Live Connected Peer List Card -->
             <div class="card">
                 <div class="card-title">
-                    <span>👥 실시간 접속자 리스트</span>
+                    <span>👥 실시간 접속자</span>
                     <span id="peerCountBadge" style="font-size: 0.75rem; color: var(--accent);">1명 접속 중</span>
                 </div>
                 <div id="peerListContainer" class="peer-list">
                     <!-- Populated dynamically -->
+                </div>
+            </div>
+
+            <!-- Completed Files Log Card (Left Sidebar) -->
+            <div class="card">
+                <div class="card-title">
+                    <span>📋 파일 송수신 기록</span>
+                    <span id="completedLogCountBadge" style="font-size: 0.75rem; color: var(--text-muted);">0개</span>
+                </div>
+                <div id="completedFilesLog" class="file-log-list">
+                    <div class="file-log-empty" id="fileLogEmptyText">완료된 파일이 여기에 기록됩니다.</div>
                 </div>
             </div>
         </aside>
@@ -713,6 +798,7 @@
                     <input type="file" id="fileInput" multiple style="display: none;">
                 </div>
 
+                <!-- Active in-progress transfers only -->
                 <div id="transferList" class="transfer-list"></div>
             </div>
 
@@ -740,8 +826,8 @@
 
     <!-- Cache-busted Scripts -->
     <script src="https://unpkg.com/mqtt@5.3.5/dist/mqtt.min.js"></script>
-    <script src="qr.min.js?v=20260819_02"></script>
-    <script src="protocol.js?v=20260819_02"></script>
-    <script src="app.js?v=20260819_02"></script>
+    <script src="qr.min.js?v=20260819_03"></script>
+    <script src="protocol.js?v=20260819_03"></script>
+    <script src="app.js?v=20260819_03"></script>
 </body>
 </html>

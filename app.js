@@ -1,5 +1,5 @@
 /**
- * WebRTC P2P DataChannel Engine with 6-Digit Key Lobby & Live Connected Peer List
+ * WebRTC P2P DataChannel Engine with 6-Digit Key Lobby, Live Peer List & Completed File Log
  */
 
 // Configuration
@@ -89,6 +89,9 @@ const btnCopyLink = document.getElementById('btnCopyLink');
 const btnLeaveRoom = document.getElementById('btnLeaveRoom');
 const peerListContainer = document.getElementById('peerListContainer');
 const peerCountBadge = document.getElementById('peerCountBadge');
+const completedFilesLog = document.getElementById('completedFilesLog');
+const completedLogCountBadge = document.getElementById('completedLogCountBadge');
+const fileLogEmptyText = document.getElementById('fileLogEmptyText');
 const dropZone = document.getElementById('dropZone');
 const fileInput = document.getElementById('fileInput');
 const transferList = document.getElementById('transferList');
@@ -97,6 +100,15 @@ const chatForm = document.getElementById('chatForm');
 const chatInput = document.getElementById('chatInput');
 const btnSendClipboard = document.getElementById('btnSendClipboard');
 const peerStatusLabel = document.getElementById('peerStatusLabel');
+
+// Accidental Refresh Protection
+window.addEventListener('beforeunload', (e) => {
+    if (activeSendingFile || incomingTransfers.size > 0) {
+        e.preventDefault();
+        e.returnValue = '파일 전송이 진행 중입니다. 페이지를 벗어나시겠습니까?';
+        return e.returnValue;
+    }
+});
 
 // Toast Notification
 function showToast(msg) {
@@ -138,12 +150,10 @@ function initApp() {
     const roomParam = params.get('room');
 
     if (roomParam && roomParam.trim().length >= 4) {
-        // Direct link / QR scan entry: Auto-fill and enter room immediately!
         const key = roomParam.trim().toUpperCase();
         lobbyKeyInput.value = key;
         enterRoom(key);
     } else {
-        // Show Lobby view to require entering/generating key
         showLobbyView();
     }
 }
@@ -179,7 +189,7 @@ function enterRoom(key) {
     startPeerPruner();
 }
 
-// Key Input auto-formatting
+// Key Input formatting
 lobbyKeyInput.addEventListener('input', (e) => {
     e.target.value = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
 });
@@ -254,7 +264,6 @@ function startPeerPruner() {
         let changed = false;
 
         activePeers.forEach((peerData, clientId) => {
-            // If peer hasn't sent heartbeat in 3.5 seconds, consider disconnected
             if (now - peerData.lastSeen > 3500) {
                 showToast(`👋 ${peerData.device} 님의 연결이 종료되었습니다.`);
                 appendSystemMessage(`[시스템] ${peerData.device} 퇴장`);
@@ -339,6 +348,45 @@ function appendSystemMessage(text) {
     bubble.textContent = text;
     chatMessages.appendChild(bubble);
     chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+// -------------------------------------------------------------
+// Left Sidebar Completed Files Log Management
+// -------------------------------------------------------------
+function addFileToCompletedLog(fileName, fileSize, direction, downloadUrl = null) {
+    if (fileLogEmptyText) fileLogEmptyText.style.display = 'none';
+
+    const div = document.createElement('div');
+    div.className = 'file-log-item';
+
+    const icon = direction === 'outgoing' ? '📤' : '📥';
+    const actionText = direction === 'outgoing' ? '전송 완료' : '수신 완료';
+    const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+    let downloadActionHtml = '';
+    if (direction === 'incoming' && downloadUrl) {
+        downloadActionHtml = `<a href="${downloadUrl}" download="${fileName}" class="file-log-download-btn">💾 저장</a>`;
+    }
+
+    div.innerHTML = `
+        <div class="file-log-top">
+            <span class="file-log-name">${icon} ${fileName}</span>
+            <span style="font-size: 0.72rem; color: var(--accent); font-weight:600;">${formatBytes(fileSize)}</span>
+        </div>
+        <div class="file-log-bottom">
+            <span>${actionText} • ${timeStr}</span>
+            ${downloadActionHtml}
+        </div>
+    `;
+
+    completedFilesLog.prepend(div);
+    updateCompletedLogCount();
+    saveFileToSession(fileName, fileSize, direction, timeStr, downloadUrl);
+}
+
+function updateCompletedLogCount() {
+    const count = completedFilesLog.querySelectorAll('.file-log-item').length;
+    completedLogCountBadge.textContent = `${count}개`;
 }
 
 // -------------------------------------------------------------
@@ -863,7 +911,7 @@ async function sendFile(file) {
         if (timeDiff > 0.1 || offset === file.size) {
             const bytesDiff = offset - lastBytes;
             const speed = timeDiff > 0 ? (bytesDiff / timeDiff) : 0;
-            updateTransferUI(transferItem, percent, offset, file.size, speed, false, null, 'outgoing');
+            updateTransferUI(transferItem, percent, offset, file.size, speed, false, 'outgoing');
             lastTime = now;
             lastBytes = offset;
         }
@@ -874,9 +922,19 @@ async function sendFile(file) {
     }
 
     activeSendingFile = null;
-    updateTransferUI(transferItem, 100, file.size, file.size, 0, true, null, 'outgoing');
-    saveFileToSession(file.name, file.size, 'outgoing');
+    updateTransferUI(transferItem, 100, file.size, file.size, 0, true, 'outgoing');
+
+    // 1. Add to Left Completed Files Log
+    addFileToCompletedLog(file.name, file.size, 'outgoing', null);
     showToast(`✅ ${file.name} 전송 완료!`);
+
+    // 2. Remove from active transfer screen after 1.2 seconds
+    setTimeout(() => {
+        if (transferItem) {
+            transferItem.classList.add('fade-out');
+            setTimeout(() => transferItem.remove(), 400);
+        }
+    }, 1200);
 }
 
 function notifyInterruptedTransfer() {
@@ -949,7 +1007,7 @@ function onReceiveFileMeta(fileId, meta) {
         pendingEarlyChunks.delete(fileId);
 
         const percent = Math.min(100, Math.floor((item.receivedBytes / item.size) * 100));
-        updateTransferUI(item.ui, percent, item.receivedBytes, item.size, 0, false, null, 'incoming');
+        updateTransferUI(item.ui, percent, item.receivedBytes, item.size, 0, false, 'incoming');
 
         if (item.chunksReceived >= item.totalChunks) {
             finalizeIncomingFile(fileId, item);
@@ -985,7 +1043,7 @@ function onReceiveFileChunk(fileId, chunkIndex, chunkData) {
     if (timeDiff > 0.1 || item.chunksReceived === item.totalChunks) {
         const bytesDiff = item.receivedBytes - item.lastBytes;
         const speed = timeDiff > 0 ? (bytesDiff / timeDiff) : 0;
-        updateTransferUI(item.ui, percent, item.receivedBytes, item.size, speed, false, null, 'incoming');
+        updateTransferUI(item.ui, percent, item.receivedBytes, item.size, speed, false, 'incoming');
         item.lastTime = now;
         item.lastBytes = item.receivedBytes;
     }
@@ -999,9 +1057,12 @@ function finalizeIncomingFile(fileId, item) {
     const blob = new Blob(item.chunks, { type: item.type || 'application/octet-stream' });
     const downloadUrl = URL.createObjectURL(blob);
 
-    updateTransferUI(item.ui, 100, item.size, item.size, 0, true, downloadUrl, 'incoming', item.name);
-    saveFileToSession(item.name, item.size, 'incoming');
+    updateTransferUI(item.ui, 100, item.size, item.size, 0, true, 'incoming');
 
+    // 1. Add to Left Completed Files Log
+    addFileToCompletedLog(item.name, item.size, 'incoming', downloadUrl);
+
+    // 2. Auto download
     try {
         const a = document.createElement('a');
         a.href = downloadUrl;
@@ -1015,10 +1076,18 @@ function finalizeIncomingFile(fileId, item) {
 
     showToast(`🎉 ${item.name} 수신 완료!`);
     incomingTransfers.delete(fileId);
+
+    // 3. Remove from active transfer screen after 1.2 seconds
+    setTimeout(() => {
+        if (item.ui) {
+            item.ui.classList.add('fade-out');
+            setTimeout(() => item.ui.remove(), 400);
+        }
+    }, 1200);
 }
 
 // -------------------------------------------------------------
-// Transfer UI Helper
+// Active Transfer UI Helper
 // -------------------------------------------------------------
 function createTransferUI(fileId, name, size, direction) {
     const div = document.createElement('div');
@@ -1046,7 +1115,7 @@ function createTransferUI(fileId, name, size, direction) {
     return div;
 }
 
-function updateTransferUI(container, percent, bytesTransferred, totalBytes, speedBytesPerSec, isComplete = false, downloadUrl = null, direction = 'outgoing', fileName = '') {
+function updateTransferUI(container, percent, bytesTransferred, totalBytes, speedBytesPerSec, isComplete = false, direction = 'outgoing') {
     if (!container) return;
     const bar = container.querySelector('.progress-bar-fill');
     const status = container.querySelector('.transfer-footer span:first-child');
@@ -1060,11 +1129,7 @@ function updateTransferUI(container, percent, bytesTransferred, totalBytes, spee
 
     if (isComplete) {
         if (bar) bar.style.background = 'var(--success)';
-        if (direction === 'incoming' && downloadUrl) {
-            status.innerHTML = `✅ 수신 완료 (${formatBytes(totalBytes)}) <a href="${downloadUrl}" download="${fileName}" style="margin-left: 8px; color: #38bdf8; text-decoration: underline; font-weight: bold;">[💾 파일 다시 저장]</a>`;
-        } else {
-            status.textContent = `✅ 전송 완료 (${formatBytes(totalBytes)})`;
-        }
+        if (status) status.textContent = direction === 'outgoing' ? `✅ 전송 완료 (${formatBytes(totalBytes)})` : `✅ 수신 완료 (${formatBytes(totalBytes)})`;
         if (speed) speed.textContent = '100%';
     } else {
         if (status) {
@@ -1077,10 +1142,29 @@ function updateTransferUI(container, percent, bytesTransferred, totalBytes, spee
 }
 
 // -------------------------------------------------------------
-// Session History Persistence
+// Session History Persistence (Chat & Completed Files Log)
 // -------------------------------------------------------------
+function saveChatToSession(text, direction) {
+    try {
+        const history = JSON.parse(sessionStorage.getItem(STORAGE_KEY_CHAT) || '[]');
+        history.push({ text, direction, time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) });
+        if (history.length > 50) history.shift();
+        sessionStorage.setItem(STORAGE_KEY_CHAT, JSON.stringify(history));
+    } catch (e) {}
+}
+
+function saveFileToSession(name, size, direction, timeStr, downloadUrl) {
+    try {
+        const history = JSON.parse(sessionStorage.getItem(STORAGE_KEY_FILES) || '[]');
+        history.unshift({ name, size, direction, time: timeStr, downloadUrl });
+        if (history.length > 30) history.pop();
+        sessionStorage.setItem(STORAGE_KEY_FILES, JSON.stringify(history));
+    } catch (e) {}
+}
+
 function restoreSessionHistory() {
     try {
+        // 1. Restore Chat
         const chatHist = JSON.parse(sessionStorage.getItem(STORAGE_KEY_CHAT) || '[]');
         if (chatHist.length > 0) {
             chatMessages.innerHTML = '';
@@ -1099,25 +1183,41 @@ function restoreSessionHistory() {
             chatMessages.scrollTop = chatMessages.scrollHeight;
         }
 
+        // 2. Restore Completed Files Log to Left Sidebar
         const fileHist = JSON.parse(sessionStorage.getItem(STORAGE_KEY_FILES) || '[]');
-        fileHist.forEach(item => {
-            const div = document.createElement('div');
-            div.className = 'transfer-item';
-            div.innerHTML = `
-                <div class="transfer-header">
-                    <span class="file-name">${item.icon} ${item.name}</span>
-                    <span class="file-meta">${formatBytes(item.size)}</span>
-                </div>
-                <div class="progress-bar-bg">
-                    <div class="progress-bar-fill" style="width: 100%; background: var(--success);"></div>
-                </div>
-                <div class="transfer-footer">
-                    <span>✅ 완료 (${formatBytes(item.size)})</span>
-                    <span>100%</span>
-                </div>
-            `;
-            transferList.appendChild(div);
-        });
+        if (fileHist.length > 0 && fileLogEmptyText) {
+            fileLogEmptyText.style.display = 'none';
+        }
+        completedFilesLog.innerHTML = '';
+        if (fileHist.length === 0) {
+            completedFilesLog.appendChild(fileLogEmptyText);
+            fileLogEmptyText.style.display = 'block';
+        } else {
+            fileHist.forEach(item => {
+                const div = document.createElement('div');
+                div.className = 'file-log-item';
+                const icon = item.direction === 'outgoing' ? '📤' : '📥';
+                const actionText = item.direction === 'outgoing' ? '전송 완료' : '수신 완료';
+
+                let downloadActionHtml = '';
+                if (item.direction === 'incoming' && item.downloadUrl) {
+                    downloadActionHtml = `<a href="${item.downloadUrl}" download="${item.name}" class="file-log-download-btn">💾 저장</a>`;
+                }
+
+                div.innerHTML = `
+                    <div class="file-log-top">
+                        <span class="file-log-name">${icon} ${item.name}</span>
+                        <span style="font-size: 0.72rem; color: var(--accent); font-weight:600;">${formatBytes(item.size)}</span>
+                    </div>
+                    <div class="file-log-bottom">
+                        <span>${actionText} • ${item.time || ''}</span>
+                        ${downloadActionHtml}
+                    </div>
+                `;
+                completedFilesLog.appendChild(div);
+            });
+        }
+        updateCompletedLogCount();
     } catch (e) {}
 }
 
