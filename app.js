@@ -245,7 +245,7 @@ function saveFileToSession(name, size, direction) {
 }
 
 // -------------------------------------------------------------
-// Global MQTT Signaling with Mutual Handshake (Zero-Fail)
+// Global MQTT Signaling with Mutual Handshake (Stable Channel)
 // -------------------------------------------------------------
 function connectSignaling(brokerIndex) {
     const brokerUrl = BROKER_URLS[brokerIndex % BROKER_URLS.length];
@@ -264,12 +264,12 @@ function connectSignaling(brokerIndex) {
         return;
     }
 
-    const roomTopic = `p2pshare/v6/${currentRoomId}/#`;
+    const roomTopic = `p2pshare/stable/${currentRoomId}/#`;
 
     mqttClient.on('connect', () => {
         console.log('[Signaling] Connected to Broker:', brokerUrl);
         if (!isConnected) {
-            updateStatus('waiting', '상대방 기기 연결 대기 중...');
+            updateStatus('waiting', `상대방 대기 중 [방코드: ${currentRoomId}]`);
         }
 
         mqttClient.subscribe(roomTopic, (err) => {
@@ -278,7 +278,7 @@ function connectSignaling(brokerIndex) {
                 if (joinBroadcastInterval) clearInterval(joinBroadcastInterval);
                 joinBroadcastInterval = setInterval(() => {
                     if (!isConnected) announcePresence(false);
-                }, 1500);
+                }, 1200);
             }
         });
     });
@@ -319,7 +319,7 @@ function announcePresence(isReply = false) {
 
 function publishSignal(type, data = {}) {
     if (!mqttClient || !mqttClient.connected) return;
-    const topic = `p2pshare/v6/${currentRoomId}/${type}`;
+    const topic = `p2pshare/stable/${currentRoomId}/${type}`;
     const payload = JSON.stringify({
         type: type,
         sender: myClientId,
@@ -336,7 +336,7 @@ function channelSend(arrayBuffer) {
     if (dataChannel && dataChannel.readyState === 'open') {
         dataChannel.send(arrayBuffer);
     } else if (mqttClient && mqttClient.connected && remoteClientId) {
-        const topic = `p2pshare/v6/${currentRoomId}/data/${remoteClientId}`;
+        const topic = `p2pshare/stable/${currentRoomId}/data/${remoteClientId}`;
         const uint8 = new Uint8Array(arrayBuffer);
         mqttClient.publish(topic, uint8);
     }
@@ -352,7 +352,6 @@ async function handleSignalingMessage(msg) {
             remoteDeviceInfo = msg.device || '상대 기기';
             peerStatusLabel.textContent = `1:1 (${remoteDeviceInfo})`;
 
-            // MUTUAL HANDSHAKE: Always reply if this wasn't already a reply!
             if (!msg.isReply) {
                 announcePresence(true);
             }
@@ -364,7 +363,6 @@ async function handleSignalingMessage(msg) {
                 startPing();
             }
 
-            // Start WebRTC direct P2P upgrade in background
             if (myClientId < remoteClientId && !peerConnection) {
                 createPeerConnection();
                 createDataChannel();
@@ -695,13 +693,9 @@ async function sendFile(file) {
         type: file.type || 'application/octet-stream'
     };
 
-    // 1. Send File Meta
     channelSend(ProtocolCodec.encodeFileMeta(fileId, meta));
-
-    // Wait a brief moment for receiver to prepare UI
     await new Promise(r => setTimeout(r, 40));
 
-    // 2. Stream Chunks with Adaptive Pacing
     let offset = 0;
     let chunkIndex = 0;
     const startTime = Date.now();
@@ -722,7 +716,6 @@ async function sendFile(file) {
         offset += arrayBuffer.byteLength;
         chunkIndex++;
 
-        // Update progress UI
         const percent = Math.min(100, Math.floor((offset / file.size) * 100));
         const now = Date.now();
         const timeDiff = (now - lastTime) / 1000;
@@ -775,7 +768,6 @@ function onReceiveFileMeta(fileId, meta) {
     incomingTransfers.set(fileId, item);
     showToast(`📥 파일 수신 시작: ${meta.name}`);
 
-    // Process any early chunks that arrived before Meta
     if (pendingEarlyChunks.has(fileId)) {
         const earlyMap = pendingEarlyChunks.get(fileId);
         earlyMap.forEach((chunkData, chunkIndex) => {
@@ -801,7 +793,6 @@ function onReceiveFileMeta(fileId, meta) {
 function onReceiveFileChunk(fileId, chunkIndex, chunkData) {
     let item = incomingTransfers.get(fileId);
 
-    // Buffer early chunks
     if (!item) {
         if (!pendingEarlyChunks.has(fileId)) {
             pendingEarlyChunks.set(fileId, new Map());
