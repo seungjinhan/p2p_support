@@ -850,6 +850,25 @@
             font-weight: 600;
             letter-spacing: 0.3px;
         }
+        .btn-doc-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            background: rgba(56, 189, 248, 0.1);
+            color: var(--accent);
+            border: 1px solid rgba(56, 189, 248, 0.3);
+            padding: 5px 12px;
+            border-radius: var(--radius-sm);
+            text-decoration: none;
+            font-size: 0.78rem;
+            font-weight: 600;
+            transition: all 0.2s ease;
+        }
+
+        .btn-doc-link:hover {
+            background: var(--accent);
+            color: #0f172a;
+        }
     </style>
 </head>
 <body>
@@ -858,11 +877,14 @@
             <div class="brand-icon">⚡</div>
             <div class="brand-title">P2P Direct Share</div>
         </div>
-        <div class="status-bar">
-            <div id="pingBadge" class="ping-badge" style="display: none;">⚡ -- ms</div>
-            <div id="statusBadge" class="status-badge">
-                <span class="status-dot"></span>
-                <span id="statusText">보안 키 입력 대기 중...</span>
+        <div style="display: flex; align-items: center; gap: 10px;">
+            <a href="architecture.html" target="_blank" class="btn-doc-link">📖 기술 원리 보기</a>
+            <div class="status-bar">
+                <div id="pingBadge" class="ping-badge" style="display: none;">⚡ -- ms</div>
+                <div id="statusBadge" class="status-badge">
+                    <span class="status-dot"></span>
+                    <span id="statusText">보안 키 입력 대기 중...</span>
+                </div>
             </div>
         </div>
     </header>

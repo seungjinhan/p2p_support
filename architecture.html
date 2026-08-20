@@ -1,0 +1,718 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>P2P Direct Share - 기술 원리 및 아키텍처 상세 가이드</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Pretendard:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <style>
+        :root {
+            --bg-primary: #0b0f19;
+            --bg-secondary: #111827;
+            --bg-tertiary: #1f2937;
+            --bg-card: rgba(17, 24, 39, 0.85);
+            --border-color: #374151;
+            --border-highlight: #38bdf8;
+            --accent: #38bdf8;
+            --accent-glow: rgba(56, 189, 248, 0.25);
+            --accent-purple: #818cf8;
+            --accent-emerald: #34d399;
+            --accent-amber: #fbbf24;
+            --accent-rose: #f87171;
+            --text-primary: #f9fafb;
+            --text-secondary: #9ca3af;
+            --text-muted: #6b7280;
+            --radius-lg: 16px;
+            --radius-md: 10px;
+            --radius-sm: 6px;
+            --shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, system-ui, Roboto, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.7;
+            background-image: 
+                radial-gradient(circle at 15% 15%, rgba(56, 189, 248, 0.08) 0%, transparent 40%),
+                radial-gradient(circle at 85% 85%, rgba(129, 140, 248, 0.08) 0%, transparent 40%);
+            background-attachment: fixed;
+            padding-bottom: 80px;
+        }
+
+        /* Top Navbar */
+        .navbar {
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            background: rgba(11, 15, 25, 0.85);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--border-color);
+            padding: 14px 28px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .nav-brand {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            text-decoration: none;
+            color: #fff;
+        }
+
+        .brand-icon {
+            font-size: 1.6rem;
+            filter: drop-shadow(0 0 8px var(--accent));
+        }
+
+        .brand-title {
+            font-size: 1.25rem;
+            font-weight: 800;
+            letter-spacing: -0.5px;
+            background: linear-gradient(135deg, #fff, var(--accent));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .btn-back {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+            padding: 8px 16px;
+            border-radius: var(--radius-sm);
+            text-decoration: none;
+            font-size: 0.88rem;
+            font-weight: 600;
+            transition: all 0.2s ease;
+        }
+
+        .btn-back:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+            transform: translateY(-1px);
+        }
+
+        /* Layout Container */
+        .container {
+            max-width: 1100px;
+            margin: 40px auto 0;
+            padding: 0 24px;
+        }
+
+        /* Hero Header */
+        .hero {
+            text-align: center;
+            padding: 40px 20px 50px;
+            margin-bottom: 40px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-lg);
+            box-shadow: var(--shadow);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .hero::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, var(--accent), var(--accent-purple), var(--accent-emerald));
+        }
+
+        .hero-badge {
+            display: inline-block;
+            background: rgba(56, 189, 248, 0.15);
+            color: var(--accent);
+            border: 1px solid rgba(56, 189, 248, 0.3);
+            font-size: 0.82rem;
+            font-weight: 700;
+            padding: 4px 14px;
+            border-radius: 20px;
+            margin-bottom: 16px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .hero-title {
+            font-size: 2.3rem;
+            font-weight: 800;
+            line-height: 1.3;
+            letter-spacing: -0.8px;
+            margin-bottom: 16px;
+        }
+
+        .hero-desc {
+            font-size: 1.1rem;
+            color: var(--text-secondary);
+            max-width: 780px;
+            margin: 0 auto;
+            word-break: keep-all;
+        }
+
+        /* Section Cards */
+        .section-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-lg);
+            padding: 36px 32px;
+            margin-bottom: 36px;
+            box-shadow: var(--shadow);
+            backdrop-filter: blur(10px);
+            transition: border-color 0.2s ease;
+        }
+
+        .section-card:hover {
+            border-color: rgba(56, 189, 248, 0.4);
+        }
+
+        .section-header {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            margin-bottom: 24px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .section-number {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--accent), var(--accent-purple));
+            color: #0f172a;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 800;
+            font-size: 1.1rem;
+        }
+
+        .section-title {
+            font-size: 1.45rem;
+            font-weight: 700;
+            letter-spacing: -0.4px;
+        }
+
+        /* Callout Box */
+        .callout {
+            background: rgba(31, 41, 55, 0.6);
+            border-left: 4px solid var(--accent);
+            padding: 16px 20px;
+            border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+            margin: 20px 0;
+            font-size: 0.95rem;
+            color: #e2e8f0;
+        }
+
+        .callout.tip {
+            border-left-color: var(--accent-emerald);
+            background: rgba(16, 185, 129, 0.08);
+        }
+
+        .callout.warn {
+            border-left-color: var(--accent-amber);
+            background: rgba(245, 158, 11, 0.08);
+        }
+
+        /* Comparison Grid */
+        .compare-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin: 24px 0;
+        }
+
+        @media (max-width: 768px) {
+            .compare-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .compare-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-md);
+            padding: 22px;
+        }
+
+        .compare-card.bad {
+            border-top: 4px solid var(--accent-rose);
+        }
+
+        .compare-card.good {
+            border-top: 4px solid var(--accent-emerald);
+            background: rgba(16, 185, 129, 0.04);
+        }
+
+        .compare-title {
+            font-size: 1.1rem;
+            font-weight: 700;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .compare-list {
+            list-style: none;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            font-size: 0.92rem;
+            color: var(--text-secondary);
+        }
+
+        .compare-list li {
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+        }
+
+        /* Diagram Box */
+        .diagram-box {
+            background: #0d1322;
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-md);
+            padding: 24px;
+            margin: 24px 0;
+            overflow-x: auto;
+            text-align: center;
+        }
+
+        /* Packet Byte Visualizer */
+        .packet-structure {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin: 20px 0;
+        }
+
+        .packet-byte-box {
+            flex: 1;
+            min-width: 140px;
+            background: var(--bg-secondary);
+            border: 2px solid var(--border-color);
+            border-radius: var(--radius-sm);
+            padding: 14px;
+            text-align: center;
+            transition: all 0.2s ease;
+        }
+
+        .packet-byte-box:hover {
+            border-color: var(--accent);
+            transform: translateY(-2px);
+        }
+
+        .byte-box-title {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.8rem;
+            color: var(--accent);
+            font-weight: 700;
+            margin-bottom: 6px;
+        }
+
+        .byte-box-desc {
+            font-size: 0.92rem;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .byte-box-size {
+            font-size: 0.72rem;
+            color: var(--text-muted);
+            margin-top: 4px;
+        }
+
+        /* Code Snippet */
+        pre {
+            background: #090d16;
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-sm);
+            padding: 18px;
+            overflow-x: auto;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.88rem;
+            color: #38bdf8;
+            margin: 16px 0;
+            line-height: 1.5;
+        }
+
+        code {
+            font-family: 'JetBrains Mono', monospace;
+            background: rgba(56, 189, 248, 0.1);
+            color: var(--accent);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.88rem;
+        }
+
+        /* Feature Table */
+        .tech-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+            font-size: 0.9rem;
+        }
+
+        .tech-table th, .tech-table td {
+            padding: 12px 16px;
+            text-align: left;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .tech-table th {
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            font-weight: 700;
+        }
+
+        .tech-table tr:hover td {
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        /* Footer */
+        .doc-footer {
+            text-align: center;
+            padding: 40px 0 20px;
+            color: var(--text-muted);
+            font-size: 0.85rem;
+            border-top: 1px solid var(--border-color);
+            margin-top: 60px;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Header Navigation -->
+    <nav class="navbar">
+        <a href="index.html" class="nav-brand">
+            <span class="brand-icon">⚡</span>
+            <span class="brand-title">P2P Direct Share Architecture</span>
+        </a>
+        <a href="index.html" class="btn-back">
+            <span>◀ 서비스로 돌아가기</span>
+        </a>
+    </nav>
+
+    <div class="container">
+        <!-- Hero Section -->
+        <header class="hero">
+            <span class="hero-badge">Deep-Dive Technical Architecture</span>
+            <h1 class="hero-title">서버 경유 0% 무제한 P2P 고속 전송의 원리</h1>
+            <p class="hero-desc">
+                WebRTC DataChannel, MQTT WebSocket 시그널링, 9-Byte 커스텀 바이너리 프로토콜, 그리고 SHA-256 채널 격리 기술이 결합된 브라우저 P2P 네트워크의 동작 구조를 상세히 해설합니다.
+            </p>
+        </header>
+
+        <!-- Section 1: Traditional vs P2P -->
+        <section class="section-card">
+            <div class="section-header">
+                <div class="section-number">1</div>
+                <h2 class="section-title">클라이언트-서버 모델 vs P2P(WebRTC) 모델</h2>
+            </div>
+            
+            <p>
+                우리가 일상에서 쓰는 클라우드(구글 드라이브, 카카오톡 등)는 <strong>중앙 서버에 파일을 업로드한 뒤 상대방이 내려받는 구조</strong>입니다. 반면 <strong>P2P Direct Share</strong>는 파일이 서버에 전혀 올라가지 않고 기기간 1:1 직통 통신로를 통해 즉시 스트리밍됩니다.
+            </p>
+
+            <div class="compare-grid">
+                <div class="compare-card bad">
+                    <div class="compare-title">
+                        <span>❌ 전통적인 클라이언트-서버 전송</span>
+                    </div>
+                    <ul class="compare-list">
+                        <li>⚠️ <strong>2배의 시간 소요</strong>: 업로드(A➔서버) 완료 후 다운로드(서버➔B) 시작</li>
+                        <li>⚠️ <strong>비싼 서버 인프라 비용</strong>: 트래픽당 AWS/GCP 전송료 발생</li>
+                        <li>⚠️ <strong>용량 제한</strong>: 서버 스토리지 및 메모리 한계로 파일 크기 제한</li>
+                        <li>⚠️ <strong>보안 및 사생활 유출 위험</strong>: 중앙 서버에 내 파일이 저장됨</li>
+                    </ul>
+                </div>
+
+                <div class="compare-card good">
+                    <div class="compare-title">
+                        <span>✅ P2P Direct Share (WebRTC 직통)</span>
+                    </div>
+                    <ul class="compare-list">
+                        <li>⚡ <strong>초고속 1:1 전송</strong>: 실시간 스트리밍으로 딜레이 최소화</li>
+                        <li>💰 <strong>서버 유지비 0원</strong>: 데이터가 서버를 거치지 않아 비용 무료</li>
+                        <li>🚀 <strong>무제한 용량 전송</strong>: 10GB, 50GB 대용량도 브라우저 메모리 고갈 없이 전송</li>
+                        <li>🔒 <strong>E2EE(종단간 암호화) 보안</strong>: 오직 수신자 기기에서만 복호화</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="diagram-box">
+                <div class="mermaid">
+graph LR
+    subgraph ClientServer["전통적인 서버 방식"]
+        A1[💻 내 PC] -->|1GB 파일 업로드| S[☁️ 중앙 스토리지 서버]
+        S -->|1GB 파일 다운로드| B1[📱 상대방 폰]
+    end
+
+    subgraph P2PDirect["P2P Direct Share 방식"]
+        A2[💻 내 PC] ==>|⚡ 1:1 WebRTC 직통 데이터 파이프라인| B2[📱 상대방 폰]
+    end
+
+    style ClientServer fill:#1e293b,stroke:#ef4444,stroke-width:2px,color:#fff
+    style P2PDirect fill:#1e293b,stroke:#10b981,stroke-width:2px,color:#fff
+    style S fill:#334155,stroke:#ef4444,color:#fff
+                </div>
+            </div>
+        </section>
+
+        <!-- Section 2: Full Connection Lifecycle -->
+        <section class="section-card">
+            <div class="section-header">
+                <div class="section-number">2</div>
+                <h2 class="section-title">통신 연결 전체 라이프사이클 (4-Step Lifecycle)</h2>
+            </div>
+
+            <p>
+                공유기(NAT)나 사설망 뒤에 숨어있는 두 기기가 서로의 위치를 찾고 안전하게 1:1 연결을 맺는 전체 과정입니다.
+            </p>
+
+            <div class="diagram-box">
+                <div class="mermaid">
+sequenceDiagram
+    autonumber
+    actor A as 💻 Host (방 생성자)
+    participant Broker as 📡 Signaling Broker (MQTT)
+    participant STUN as 🌐 STUN/TURN 서버
+    actor B as 📱 Guest (참여자)
+
+    Note over A,B: [1단계] SHA-256 채널 격리 및 방 개설
+    A->>A: SHA256(방키 + 비밀번호)로 채널 토픽 유도
+    A->>Broker: "p2pshare/v8/ABC123_hash/#" 토픽 구독 및 대기
+
+    Note over A,B: [2단계] QR 스캔 및 상호 존재 감지 (Signaling)
+    B->>B: QR 스캔 후 동일한 비밀번호 입력
+    B->>Broker: "p2pshare/v8/ABC123_hash/presence" 브로드캐스트
+    Broker-->>A: B 기기 접속 알림 전달 (💻 1:1 연결 감지)
+
+    Note over A,B: [3단계] NAT 관통 및 WebRTC 악수 (Handshake)
+    A->>STUN: "내 공인 IP와 포트가 뭐야?" (ICE Candidate 수집)
+    B->>STUN: "내 공인 IP와 포트가 뭐야?"
+    A->>Broker: 통신 제안서(SDP Offer) 전송
+    Broker->>B: SDP Offer 전달
+    B->>Broker: 통신 수락서(SDP Answer) 전송
+    Broker->>A: SDP Answer 전달
+
+    Note over A,B: [4단계] 1:1 직통 P2P DataChannel 개통 (중매쟁이 이탈)
+    A->>B: ⚡ WebRTC SCTP 1:1 직통 통신로 연결 완료! (서버 완전 배제)
+                </div>
+            </div>
+
+            <div class="callout tip">
+                <strong>💡 Signaling(시그널링)이란?</strong><br>
+                두 기기가 직접 연결되기 전까지는 서로의 공인 IP나 포트를 알 수 없습니다. 따라서 처음에만 가벼운 <strong>중매쟁이(MQTT Signaling Broker)</strong>를 통해 <em>"내 통신 정보(SDP/ICE)는 이거야"</em>라는 명함만 딱 1번 주고받고, 연결이 체결된 즉시 중매쟁이를 떠나 <strong>둘이서만 1:1로 직접 통신</strong>합니다.
+            </div>
+        </section>
+
+        <!-- Section 3: 9-Byte Custom Binary Protocol -->
+        <section class="section-card">
+            <div class="section-header">
+                <div class="section-number">3</div>
+                <h2 class="section-title">9-Byte 커스텀 바이너리 프로토콜 (초고속 전송 규격)</h2>
+            </div>
+
+            <p>
+                웹 개발에서 널리 쓰이는 <code>JSON.stringify()</code>나 Base64는 <strong>33% 이상의 메모리 낭비와 극심한 CPU 직렬화 지연</strong>을 발생시킵니다. 본 시스템은 C/Go 언어 수준의 <strong>초경량 9바이트 Big-Endian 바이너리 헤더</strong>를 자체 설계하여 메모리 복사 없이 초고속으로 스트리밍합니다.
+            </p>
+
+            <div class="packet-structure">
+                <div class="packet-byte-box">
+                    <div class="byte-box-title">[Byte 0]</div>
+                    <div class="byte-box-desc">Type (패킷 종류)</div>
+                    <div class="byte-box-size">Uint8 (1 Byte)</div>
+                </div>
+                <div class="packet-byte-box">
+                    <div class="byte-box-title">[Byte 1 ~ 4]</div>
+                    <div class="byte-box-desc">File ID (파일 번호)</div>
+                    <div class="byte-box-size">Uint32 Big-Endian (4 Byte)</div>
+                </div>
+                <div class="packet-byte-box">
+                    <div class="byte-box-title">[Byte 5 ~ 8]</div>
+                    <div class="byte-box-desc">Seq / Length (순번)</div>
+                    <div class="byte-box-size">Uint32 Big-Endian (4 Byte)</div>
+                </div>
+                <div class="packet-byte-box" style="flex: 2; border-color: var(--accent);">
+                    <div class="byte-box-title">[Byte 9 ~ N]</div>
+                    <div class="byte-box-desc">Payload (실제 데이터)</div>
+                    <div class="byte-box-size">Raw ArrayBuffer (최대 16 KB)</div>
+                </div>
+            </div>
+
+            <table class="tech-table">
+                <thead>
+                    <tr>
+                        <th>타입 코드</th>
+                        <th>명칭</th>
+                        <th>역할 및 동작 설명</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>0x01</code></td>
+                        <td><strong>CHAT</strong></td>
+                        <td>실시간 텍스트 메시지 및 클립보드 공유 전송</td>
+                    </tr>
+                    <tr>
+                        <td><code>0x02</code></td>
+                        <td><strong>FILE_META</strong></td>
+                        <td>파일 이름, 전체 크기, 총 청크(조각) 수 메타데이터 전송</td>
+                    </tr>
+                    <tr>
+                        <td><code>0x03</code></td>
+                        <td><strong>FILE_CHUNK</strong></td>
+                        <td>16KB 단위의 바이너리 파일 조각 실시간 스트리밍</td>
+                    </tr>
+                    <tr>
+                        <td><code>0x05</code></td>
+                        <td><strong>FILE_CANCEL</strong></td>
+                        <td>전송 중단 즉시 수신측 버퍼 및 메모리를 해제하는 9바이트 취소 신호</td>
+                    </tr>
+                    <tr>
+                        <td><code>0x06 / 0x07</code></td>
+                        <td><strong>PING / PONG</strong></td>
+                        <td>네트워크 레이턴시(RTT ms) 측정 및 실시간 연결 상태 감시</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <div class="callout">
+                <strong>🔧 JavaScript 구현 핵심 (protocol.js):</strong>
+<pre><code>// 9-Byte Binary Header 인코딩 예시
+const buffer = new ArrayBuffer(9 + chunkData.byteLength);
+const view = new DataView(buffer);
+
+view.setUint8(0, 0x03);                 // [Type: FILE_CHUNK]
+view.setUint32(1, fileId, false);       // [FileID: 4-Byte Big-Endian]
+view.setUint32(5, chunkIndex, false);   // [ChunkIndex: 4-Byte Big-Endian]
+
+new Uint8Array(buffer, 9).set(new Uint8Array(chunkData));
+dataChannel.send(buffer); // Zero-Copy Direct Transmission!</code></pre>
+            </div>
+        </section>
+
+        <!-- Section 4: Full-Duplex Flow Control & Concurrency -->
+        <section class="section-card">
+            <div class="section-header">
+                <div class="section-number">4</div>
+                <h2 class="section-title">전이중(Full-Duplex) 동시 전송 & 브라우저 버퍼 제어</h2>
+            </div>
+
+            <p>
+                양쪽 기기에서 대용량 파일을 <strong>동시에 서로에게 보낼 때 연결이 끊기거나 멈추지 않는 핵심 비결</strong>입니다.
+            </p>
+
+            <div class="diagram-box">
+                <div class="mermaid">
+flowchart TD
+    Start([파일 전송 시작]) --> Slice[16KB 조각 슬라이싱]
+    Slice --> CheckBuf{WebRTC 버퍼 > 256KB?}
+    CheckBuf -- Yes --> Drain[onbufferedamountlow 대기 (이벤트 루프 해제)]
+    Drain --> CheckBuf
+    CheckBuf -- No --> Send[dataChannel.send 패킷 송출]
+    Send --> Yield{2개 청크 전송 완료?}
+    Yield -- Yes --> Sleep[4ms Event Loop Yielding<br/>상대방 수신 패킷 & 하트비트 처리]
+    Yield -- No --> NextChunk
+    Sleep --> NextChunk{모든 조각 전송 완료?}
+    NextChunk -- No --> Slice
+    NextChunk -- Yes --> Complete([전송 완료 및 로그 기록])
+
+    style Sleep fill:#0369a1,stroke:#38bdf8,color:#fff
+    style Drain fill:#92400e,stroke:#f59e0b,color:#fff
+                </div>
+            </div>
+
+            <div class="compare-grid">
+                <div class="compare-card">
+                    <div class="compare-title">
+                        <span>⚡ 16KB 표준 청킹 & 4ms Yielding</span>
+                    </div>
+                    <p style="font-size: 0.9rem; color: var(--text-secondary);">
+                        브라우저의 자바스크립트는 싱글 스레드입니다. 송신 루프 사이에 <code>await new Promise(r => setTimeout(r, 4))</code>를 적응형으로 배치하여, <strong>내가 보내는 중에도 상대방이 보내오는 데이터를 실시간으로 수신</strong>합니다.
+                    </p>
+                </div>
+
+                <div class="compare-card">
+                    <div class="compare-title">
+                        <span>💓 모든 패킷의 능동 하트비트화</span>
+                    </div>
+                    <p style="font-size: 0.9rem; color: var(--text-secondary);">
+                        파일 데이터 청크가 들어오는 것 자체가 상대방이 살아있다는 증거이므로, <strong>모든 수신 패킷마다 `lastSeen` 타임스탬프를 갱신</strong>하여 대용량 전송 중 타이머 오판으로 인한 연결 끊김을 완벽히 방지합니다.
+                    </p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Section 5: Security Architecture -->
+        <section class="section-card">
+            <div class="section-header">
+                <div class="section-number">5</div>
+                <h2 class="section-title">보안 및 접근 제어 아키텍처 (SHA-256 E2EE)</h2>
+            </div>
+
+            <p>
+                서버가 없는 환경(GitHub Pages)에서도 <strong>허가된 사용자만 방에 접속할 수 있도록 설계된 암호학적 채널 격리</strong> 원리입니다.
+            </p>
+
+            <div class="diagram-box">
+                <div class="mermaid">
+graph LR
+    Key[6자리 방 키<br/>예: ABC123] --> Combine[문자열 결합]
+    PW[접속 패스워드<br/>예: dev1234qwer] --> Combine
+    Combine --> Hash[Web Crypto SHA-256]
+    Hash --> Topic["격리된 고유 통신 토픽<br/>p2pshare/v8/ABC123_e1826f03d523/#"]
+
+    style Key fill:#1e293b,stroke:#38bdf8,color:#fff
+    style PW fill:#1e293b,stroke:#f59e0b,color:#fff
+    style Hash fill:#4338ca,stroke:#818cf8,color:#fff
+    style Topic fill:#065f46,stroke:#34d399,color:#fff
+                </div>
+            </div>
+
+            <div class="callout tip">
+                <strong>🔒 원천 침입 차단 원리:</strong><br>
+                비밀번호가 1글자라도 틀리면 <code>SHA-256</code> 해시 결과가 완전히 달라져 <strong>전혀 다른 채널 토픽에 접속</strong>하게 됩니다. 따라서 제3자가 임의로 6자리 방 키를 무작위 대입하더라도 패스워드를 모르면 통신 신호 자체를 도청하거나 방에 들어올 수 없습니다.
+            </div>
+        </section>
+
+        <!-- Footer -->
+        <footer class="doc-footer">
+            <p>⚡ P2P Direct Share Architecture Guide • Open Web Standards (WebRTC, MQTT, Web Crypto)</p>
+        </footer>
+    </div>
+
+    <script>
+        mermaid.initialize({ 
+            startOnLoad: true,
+            theme: 'dark',
+            themeVariables: {
+                darkMode: true,
+                background: '#0d1322',
+                primaryColor: '#1e293b',
+                primaryTextColor: '#f9fafb',
+                lineColor: '#38bdf8'
+            }
+        });
+    </script>
+</body>
+</html>
